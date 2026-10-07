@@ -3,160 +3,239 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Driver HUD - PI-GNN</title>
+    <title>PI-GNN Driver HUD — Real-Time Flood Rerouting</title>
+    <meta name="description" content="Real-time logistics HUD with PI-GNN flood hazard detection, A* rerouting, and VDTN mesh networking for NH544 corridor.">
     <link rel="manifest" href="manifest.json">
-    <link rel="stylesheet" href="style.css">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Roboto+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="background-anim"></div>
     <div class="hud-container">
         
-        <header class="hud-header">
+        <header class="hud-header" id="hud-header">
             <div class="logo">
                 <span class="pulse-dot" id="connection-dot"></span>
-                <h1>PI-GNN Logistics HUD</h1>
+                <div class="logo-text">
+                    <h1>PI-GNN Logistics HUD</h1>
+                    <p class="subtitle" id="stage-label">Initializing…</p>
+                </div>
             </div>
-            <div class="vehicle-info">
-                <span>VEHICLE: <strong>TRK-774-X</strong></span>
-                <span class="status-badge safe" id="overall-status">SAFE</span>
+            <div class="header-right">
+                <div class="vehicle-info">
+                    <span class="vehicle-id">TRK-774-X</span>
+                    <span class="status-badge safe" id="overall-status">SAFE</span>
+                </div>
+                <div class="header-controls">
+                    <button class="btn btn-sm btn-accent" id="btn-tts-toggle" title="Toggle voice alerts">
+                        <span id="tts-icon">🔊</span>
+                    </button>
+                    <button class="btn btn-sm" id="btn-sim-restart" title="Restart simulation">↺</button>
+                </div>
             </div>
         </header>
 
-        <main class="hud-grid">
-            <!-- COLUMN 1: Routing & Nav -->
-            <div class="hud-col">
-                <section class="panel route-panel">
-                    <h2>Navigation Info</h2>
-                    
-                    <div class="data-row">
-                        <span class="label">CURRENT ROUTE</span>
-                        <span class="value" id="route-type">ORIGINAL</span>
+        <main class="hud-main">
+            <!-- LEFT: Map -->
+            <div class="map-section">
+                <div id="map-container" class="map-container">
+                    <div id="map" class="leaflet-map"></div>
+                    <div class="map-overlay-top">
+                        <div class="map-badge" id="map-route-badge">ORIGINAL ROUTE</div>
+                        <div class="map-badge map-badge-accent" id="map-network-badge">CELLULAR</div>
                     </div>
-                    
-                    <div class="data-row">
-                        <span class="label">DISTANCE</span>
-                        <span class="value"><span id="route-length">29.4</span> KM</span>
+                    <div class="map-overlay-bottom">
+                        <div class="map-stat">
+                            <span class="map-stat-label">DISTANCE</span>
+                            <span class="map-stat-value" id="map-distance">29.4 km</span>
+                        </div>
+                        <div class="map-stat">
+                            <span class="map-stat-label">ETA</span>
+                            <span class="map-stat-value" id="map-eta">44 min</span>
+                        </div>
+                        <div class="map-stat">
+                            <span class="map-stat-label">HAZARD</span>
+                            <span class="map-stat-value" id="map-hazard">0.11 m²/s</span>
+                        </div>
                     </div>
-                    
-                    <div class="data-row">
-                        <span class="label">ETA</span>
-                        <span class="value"><span id="route-eta">44</span> MIN</span>
-                    </div>
+                </div>
 
-                    <div class="data-row">
-                        <span class="label">NETWORK</span>
-                        <span class="value highlight">VDTN MESH</span>
+                <!-- Navigation Panel — overlaid below map stats -->
+                <section class="panel nav-panel" id="nav-panel">
+                    <h2>
+                        <span class="panel-icon">🧭</span> Live Navigation
+                        <span class="nav-route-status on-route" id="nav-route-status">ON ROUTE</span>
+                    </h2>
+                    <div class="nav-grid">
+                        <div class="nav-metric">
+                            <span class="nav-label">REMAINING</span>
+                            <span class="nav-value" id="nav-distance">29.4 km</span>
+                        </div>
+                        <div class="nav-metric">
+                            <span class="nav-label">ETA</span>
+                            <span class="nav-value" id="nav-eta">44 min</span>
+                        </div>
+                        <div class="nav-metric">
+                            <span class="nav-label">SPEED</span>
+                            <span class="nav-value" id="nav-speed">40 km/h</span>
+                        </div>
+                        <div class="nav-metric">
+                            <span class="nav-label">HEADING</span>
+                            <span class="nav-value" id="nav-bearing">—</span>
+                        </div>
                     </div>
-
-                    <div class="alert-box" id="reroute-alert">
-                        ⚠️ CRITICAL HAZARD AHEAD - ROUTE DIVERTED ⚠️
+                    <div class="nav-progress-row">
+                        <span class="nav-label">ROUTE PROGRESS</span>
+                        <span class="nav-pct" id="nav-progress">0%</span>
                     </div>
-                </section>
-                
-                <section class="panel routing-panel">
-                    <h2>Route Settings</h2>
-                    <div class="form-group">
-                        <label>Origin</label>
-                        <select id="route-origin">
-                            <option value="76.319778,10.249946">Cochin Hub 01</option>
-                            <option value="76.330000,10.250000">Angamaly Depot</option>
-                        </select>
+                    <div class="nav-progress-track">
+                        <div class="nav-progress-fill" id="nav-progress-bar" style="width:0%"></div>
                     </div>
-                    <div class="form-group">
-                        <label>Destination</label>
-                        <select id="route-dest">
-                            <option value="76.390489,10.379903">Thrissur Terminal</option>
-                            <option value="76.330000,10.300000">Chalakudy</option>
-                        </select>
+                    <div class="nav-waypoint-row">
+                        <span class="nav-label">NEXT WAYPOINT</span>
+                        <span class="nav-waypoint-val" id="nav-next-waypoint">Calculating…</span>
                     </div>
-                    <div class="form-group">
-                        <label>Fix Waypoint</label>
-                        <select id="route-waypoint">
-                            <option value="">None (Auto-route)</option>
-                            <option value="76.350000,10.280000">Koratty Checkpost</option>
-                        </select>
-                    </div>
-                    <button class="btn" id="btn-recalculate">Recalculate Route</button>
                 </section>
             </div>
-            
-            <!-- COLUMN 2: Telemetry & Reports -->
-            <div class="hud-col">
-                <section class="panel sensor-panel">
-                    <h2>Live Telemetry</h2>
+
+            <!-- RIGHT: Panels -->
+            <div class="panels-section">
+                <!-- Telemetry Panel -->
+                <section class="panel telemetry-panel" id="telemetry-panel">
+                    <h2>
+                        <span class="panel-icon">📡</span> Live Telemetry
+                        <span class="live-indicator" id="live-indicator">LIVE</span>
+                    </h2>
                     <div class="telemetry-grid">
-                        <div class="metric">
-                            <span class="metric-label">Hazard (m²/s)</span>
-                            <span class="metric-value" id="hazard-val">0.110</span>
+                        <div class="metric" id="metric-hazard">
+                            <span class="metric-label">Hazard Coef.</span>
+                            <span class="metric-value" id="hazard-val">0.111</span>
+                            <span class="metric-unit">m²/s</span>
                         </div>
-                        <div class="metric">
-                            <span class="metric-label">Affected Nodes</span>
+                        <div class="metric" id="metric-depth">
+                            <span class="metric-label">Flow Depth</span>
+                            <span class="metric-value" id="depth-val">0.20</span>
+                            <span class="metric-unit">m</span>
+                        </div>
+                        <div class="metric" id="metric-velocity">
+                            <span class="metric-label">Flow Velocity</span>
+                            <span class="metric-value" id="velocity-val">0.50</span>
+                            <span class="metric-unit">m/s</span>
+                        </div>
+                        <div class="metric" id="metric-manning">
+                            <span class="metric-label">Manning's n</span>
+                            <span class="metric-value" id="manning-val">0.015</span>
+                            <span class="metric-unit"></span>
+                        </div>
+                        <div class="metric" id="metric-affected">
+                            <span class="metric-label">Affected Segs</span>
                             <span class="metric-value" id="affected-val">0</span>
+                            <span class="metric-unit">segments</span>
+                        </div>
+                        <div class="metric" id="metric-stage">
+                            <span class="metric-label">Sim Stage</span>
+                            <span class="metric-value" id="stage-val">0</span>
+                            <span class="metric-unit">/ 5</span>
                         </div>
                     </div>
                 </section>
-                
-                <section class="panel env-panel">
-                    <h2>Environmental Conditions</h2>
-                    <div class="env-grid">
-                        <div class="env-item">
-                            <span class="env-label">Flood Risk:</span>
-                            <span class="env-value" id="env-flood">Low</span>
-                        </div>
-                        <div class="env-item">
-                            <span class="env-label">Traffic:</span>
-                            <span class="env-value" id="env-traffic">Smooth</span>
-                        </div>
-                        <div class="env-item">
-                            <span class="env-label">Weather:</span>
-                            <span class="env-value" id="env-weather">Clear</span>
-                        </div>
-                        <div class="env-item">
-                            <span class="env-label">Road Blocks:</span>
-                            <span class="env-value" id="env-blocks">None</span>
-                        </div>
-                        <div class="env-item">
-                            <span class="env-label">Landslide:</span>
-                            <span class="env-value" id="env-landslide">No Risk</span>
-                        </div>
+
+                <!-- Alert Banner -->
+                <div class="alert-box" id="reroute-alert">
+                    <div class="alert-icon">⚠️</div>
+                    <div class="alert-text">
+                        <strong>CRITICAL HAZARD AHEAD</strong>
+                        <span id="alert-detail">Route diverted via safe corridor</span>
+                    </div>
+                </div>
+
+                <!-- Report Event Panel -->
+                <section class="panel report-panel" id="report-panel">
+                    <h2><span class="panel-icon">📋</span> Report Event</h2>
+                    <div class="report-grid">
+                        <button class="report-btn report-flood" id="btn-report-flood" onclick="openReportModal('flood')">
+                            <span class="report-emoji">🌊</span>
+                            <span>Flood</span>
+                        </button>
+                        <button class="report-btn report-landslide" id="btn-report-landslide" onclick="openReportModal('landslide')">
+                            <span class="report-emoji">⛰️</span>
+                            <span>Landslide</span>
+                        </button>
+                        <button class="report-btn report-traffic" id="btn-report-traffic" onclick="openReportModal('traffic_congestion')">
+                            <span class="report-emoji">🚗</span>
+                            <span>Traffic</span>
+                        </button>
+                        <button class="report-btn report-accident" id="btn-report-accident" onclick="openReportModal('accident')">
+                            <span class="report-emoji">💥</span>
+                            <span>Accident</span>
+                        </button>
+                        <button class="report-btn report-roadblock" id="btn-report-roadblock" onclick="openReportModal('road_blocked')">
+                            <span class="report-emoji">🚧</span>
+                            <span>Road Block</span>
+                        </button>
+                        <button class="report-btn report-other" id="btn-report-other" onclick="openReportModal('hazard')">
+                            <span class="report-emoji">⚡</span>
+                            <span>Other</span>
+                        </button>
                     </div>
                 </section>
-                
-                <section class="panel reports-panel">
-                    <h2>Field Reports</h2>
-                    <div class="report-actions">
-                        <button class="btn btn-warning" onclick="submitReport('Flood')">Report Flood</button>
-                        <button class="btn btn-critical" onclick="submitReport('Block')">Report Block</button>
-                    </div>
-                    <ul class="report-list" id="report-list">
-                        <li><span class="time">[08:15]</span> TRK-102-Y reported minor flooding.</li>
-                    </ul>
-                </section>
-            </div>
-            
-            <!-- COLUMN 3: V2V & Feed -->
-            <div class="hud-col">
-                <section class="panel v2v-panel">
-                    <h2>Nearby V2V Fleet (Visibility Circle)</h2>
-                    <ul class="v2v-list" id="v2v-list">
-                        <!-- Populated by JS -->
-                    </ul>
-                </section>
-                
-                <section class="panel feed-panel">
-                    <h2>System Feed</h2>
+
+                <!-- System Feed -->
+                <section class="panel feed-panel" id="feed-panel">
+                    <h2><span class="panel-icon">📜</span> System Feed</h2>
                     <ul id="event-feed" class="event-feed">
-                        <li><span class="time">System</span> initialized and standing by.</li>
+                        <li><span class="time">[System]</span> Initializing HUD and connecting to telemetry stream…</li>
                     </ul>
+                </section>
+
+                <!-- V2V Fleet -->
+                <section class="panel v2v-panel" id="v2v-panel">
+                    <h2><span class="panel-icon">📶</span> V2V Fleet Nearby</h2>
+                    <ul class="v2v-list" id="v2v-list"></ul>
                 </section>
             </div>
         </main>
-        
+
         <footer class="hud-footer">
-            <p>End-to-End Encrypted via VDTN • Secure Offline Link</p>
+            <p>End-to-End Encrypted via VDTN • PI-GNN Hydro-Kinematic Routing • Secure Offline Link</p>
         </footer>
     </div>
+
+    <!-- Report Modal -->
+    <div class="modal-overlay" id="report-modal">
+        <div class="modal" id="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-title">Report Event</h3>
+                <button class="modal-close" id="btn-modal-close" onclick="closeReportModal()">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="report-severity">Severity Level</label>
+                    <div class="severity-selector">
+                        <button class="sev-btn sev-low active" data-sev="1" id="sev-1" onclick="setSeverity(1)">Low</button>
+                        <button class="sev-btn sev-med" data-sev="2" id="sev-2" onclick="setSeverity(2)">Medium</button>
+                        <button class="sev-btn sev-high" data-sev="3" id="sev-3" onclick="setSeverity(3)">High</button>
+                        <button class="sev-btn sev-critical" data-sev="4" id="sev-4" onclick="setSeverity(4)">Critical</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="report-description">Description (optional)</label>
+                    <textarea id="report-description" placeholder="Describe the situation…" rows="3"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Location</label>
+                    <p class="location-info" id="report-location">Using vehicle's current GPS position</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-cancel" id="btn-report-cancel" onclick="closeReportModal()">Cancel</button>
+                <button class="btn btn-submit" id="btn-report-submit" onclick="submitReport()">Submit Report</button>
+            </div>
+        </div>
+    </div>
+
     <script src="app.js"></script>
 </body>
 </html>
