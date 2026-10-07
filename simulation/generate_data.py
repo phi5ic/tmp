@@ -1,372 +1,1091 @@
-#!/usr/bin/env python3
 """
 generate_qgis_data.py
-─────────────────────
-Reads the existing routes.geojson + routes.json produced by the PI-GNN
-pipeline and emits a set of QGIS-ready GeoJSON files inside ./data/.
 
-Each file is tagged with:
-  • scenario_stage  (int 0-5  — mirrors the React demo stages)
-  • stage_label     (str      — human-readable)
-  • begin_time / end_time     — ISO-8601 strings for QGIS Temporal Controller
-  • hazard_coefficient        — float m²/s
-  • hazard_class              — "SAFE" | "WARNING" | "CRITICAL"
-  • is_critical               — bool
+Generate QGIS-ready GeoJSON layers for the Hydro-Kinematic /
+PI-GNN / VDTN flood-response demonstration.
 
-Output files
-────────────
-  data/nh544_original.geojson   — NH544 route, all segments, per-stage hazard
-  data/nh544_reroute.geojson    — PI-GNN reroute path (visible from stage 5)
-  data/flood_basin.geojson      — Chalakudy Basin flood polygon (stage 2+)
-  data/vehicles.geojson         — FMCG truck + fleeing vehicle point track
-  data/sensor_nodes.geojson     — NH544-A and NH544-B sensor positions
+Outputs:
+    data/nh544_original.geojson
+    data/nh544_reroute.geojson
+    data/flood_basin.geojson
+    data/vehicles.geojson
+    data/sensor_nodes.geojson
+    data/mesh_rings.geojson
 
-Run from the repo root:
-  python3 qgis-demo/generate_qgis_data.py
+Mesh rings:
+    During Stage 3 and Stage 4, vehicles are surrounded by a
+    circular polygon representing the local VDTN mesh communication
+    coverage area.
+
+The mesh ring radius can be changed with:
+    MESH_RADIUS_M = 150
 """
 
+from pathlib import Path
 import json
-import os
-import sys
-from datetime import datetime, timezone, timedelta
+import math
+from datetime import datetime, timedelta
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
-HERE      = os.path.dirname(os.path.abspath(__file__))
-OUT_DIR   = os.path.join(HERE, "data")
-os.makedirs(OUT_DIR, exist_ok=True)
+# ---------------------------------------------------------------------
+# Optional PI-GNN import
+# ---------------------------------------------------------------------
 
-# Source GeoJSON files are bundled inside data/ for self-containment.
-# If the original digital-twin-archived folder is still present the script
-# can also be pointed there; the bundled copies are the canonical source.
-GEOJSON   = os.path.join(OUT_DIR, "routes_source.geojson")
-ROUTES_JS = os.path.join(OUT_DIR, "routes_coords.json")
-
-# Fallback to archived digital-twin folder if bundled copies are missing
-if not os.path.exists(GEOJSON):
-    ROOT    = os.path.dirname(HERE)
-    for candidate in ["digital-twin", "digital-twin-archived"]:
-        p = os.path.join(ROOT, candidate, "public", "routes.geojson")
-        if os.path.exists(p):
-            GEOJSON = p
-            break
-if not os.path.exists(ROUTES_JS):
-    ROOT    = os.path.dirname(HERE)
-    for candidate in ["digital-twin", "digital-twin-archived"]:
-        p = os.path.join(ROOT, candidate, "src", "routes.json")
-        if os.path.exists(p):
-            ROUTES_JS = p
-            break
-
-# ── PI-GNN inference (mirrors webhook_server.py exactly) ─────────────────────
-# Try to import the real model; fall back to hard-coded deterministic values
-# so this script runs even without PyTorch installed.
 try:
-    sys.path.insert(0, os.path.join(os.path.dirname(HERE), "pi-gnn"))
     import torch
-    from core.model import PIGNN, calculate_hazard_coefficient, seed_and_train
-
-    _model = PIGNN(node_features=4, hidden_dim=16, output_features=2)
-    seed_and_train(_model)
-
-    def run_inference(S0: float, n: float) -> tuple[float, bool]:
-        x   = torch.tensor([[100.0, S0, n, 20.0]], dtype=torch.float32)
-        adj = torch.tensor([[1.0]])
-        with torch.no_grad():
-            pred = _model(x, adj)
-        d, v = pred[0, 0].item(), pred[0, 1].item()
-        hazard, critical = calculate_hazard_coefficient(d, v)
-        return round(hazard, 4), bool(critical)
-
-    print("[generate] Using real PI-GNN model for inference.")
-
+    PI_GNN_AVAILABLE = True
 except ImportError:
-    # Deterministic fallback — matches seed_and_train output exactly
-    def run_inference(S0: float, n: float) -> tuple[float, bool]:  # type: ignore[misc]
-        if n > 0.04:
-            return 3.0800, True   # flood scenario  (S0=0.05, n=0.065)
-        return 0.1100, False      # normal scenario (S0=0.01, n=0.015)
+    torch = None
+    PI_GNN_AVAILABLE = False
 
-    print("[generate] PyTorch not available — using hard-coded PI-GNN values.")
 
-# ── Demo scenario timeline ────────────────────────────────────────────────────
-# Each stage maps to a 60-second window so judges can scrub slowly.
-# T0 is an arbitrary fixed reference so the project is reproducible.
-T0 = datetime(2026, 7, 15, 9, 0, 0, tzinfo=timezone.utc)
+# ---------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------
+
+BASE_DIR = Path(__file__).resolve().parent
+
+DATA_DIR = BASE_DIR / "data"
+
+ROUTES_SOURCE = BASE_DIR / "routes_source.geojson"
+ROUTES_COORDS = BASE_DIR / "routes_coords.json"
+
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ---------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------
+
+# VDTN communication radius around each vehicle.
+# Change this value if you want a larger/smaller mesh coverage area.
+MESH_RADIUS_M = 150
+
+# Number of vertices used to draw each mesh circle.
+# Higher = smoother circle.
+MESH_CIRCLE_POINTS = 48
+
+# Approximate conversion from meters to longitude/latitude degrees.
+# This is sufficient for a visualization-scale demo.
+METERS_PER_DEGREE_LAT = 111_320.0
+
+
+# ---------------------------------------------------------------------
+# Scenario stages
+# ---------------------------------------------------------------------
 
 STAGES = [
-    # (stage, label,               duration_s, S0,   n_rough, description)
-    (0, "Pre-Event: Normal",        60,  0.010, 0.015, "Baseline — NH544 normal traffic, no flood signal"),
-    (1, "Fleet En-Route",           60,  0.010, 0.015, "FMCG-01 truck moving along NH544, conditions nominal"),
-    (2, "Cloudburst Detected",      60,  0.050, 0.065, "Unpredicted cloudburst — Manning n rises, depth/velocity spike"),
-    (3, "Cellular Failure / VDTN",  60,  0.050, 0.065, "Infrastructure failure — nodes switch to VDTN offline mesh"),
-    (4, "Hazard Confirmed Critical",60,  0.050, 0.065, "PI-GNN hazard coefficient 3.08 m²/s — CRITICAL threshold breached"),
-    (5, "Reroute Executed",         120, 0.010, 0.015, "PI-GNN offline reroute manoeuvre complete — truck on safe path"),
+    {
+        "stage": 0,
+        "label": "Pre-Event Normal",
+        "duration": 60,
+    },
+    {
+        "stage": 1,
+        "label": "Fleet En-Route",
+        "duration": 60,
+    },
+    {
+        "stage": 2,
+        "label": "Cloudburst Detected",
+        "duration": 60,
+    },
+    {
+        "stage": 3,
+        "label": "Cellular Failure / VDTN",
+        "duration": 60,
+    },
+    {
+        "stage": 4,
+        "label": "Hazard Confirmed Critical",
+        "duration": 60,
+    },
+    {
+        "stage": 5,
+        "label": "Reroute Executed",
+        "duration": 120,
+    },
 ]
 
-def stage_window(stage_idx: int) -> tuple[datetime, datetime]:
-    offset = sum(s[2] for s in STAGES[:stage_idx])
-    t_start = T0 + timedelta(seconds=offset)
-    t_end   = t_start + timedelta(seconds=STAGES[stage_idx][2])
-    return t_start, t_end
 
-def hazard_class(h: float) -> str:
-    if h < 0.4:  return "SAFE"
-    if h < 0.8:  return "WARNING"
-    return "CRITICAL"
+# ---------------------------------------------------------------------
+# Utility functions
+# ---------------------------------------------------------------------
 
-# ── Load source data ──────────────────────────────────────────────────────────
-with open(GEOJSON) as f:
-    source_gj = json.load(f)
+def ensure_feature_collection(obj):
+    """
+    Make sure an object is a GeoJSON FeatureCollection.
+    """
+    if obj.get("type") == "FeatureCollection":
+        return obj
 
-with open(ROUTES_JS) as f:
-    routes_js = json.load(f)
+    if obj.get("type") == "Feature":
+        return {
+            "type": "FeatureCollection",
+            "features": [obj],
+        }
 
-orig_features    = [ft for ft in source_gj["features"] if ft["properties"]["segment_id"].startswith("ORIG-SEG-")]
-reroute_features = [ft for ft in source_gj["features"] if ft["properties"]["segment_id"].startswith("REROUTE-SEG-")]
+    raise ValueError("Unsupported GeoJSON structure")
 
-ORIG_TOTAL    = len(orig_features)
-REROUTE_TOTAL = len(reroute_features)
 
-# Sensor coverage (mirrors webhook_server.py SENSOR_SEGMENT_MAP)
-SENSOR_A_RANGE = (0,   206)   # approach zone
-SENSOR_B_RANGE = (164, 618)   # flood zone
+def write_geojson(path, feature_collection):
+    """
+    Write GeoJSON with readable formatting.
+    """
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(
+            feature_collection,
+            f,
+            indent=2,
+            ensure_ascii=False,
+        )
 
-print(f"[generate] Loaded {ORIG_TOTAL} ORIG segments, {REROUTE_TOTAL} REROUTE segments.")
+    print(f"[OK] Wrote: {path}")
 
-# ── 1. NH544 Original route ───────────────────────────────────────────────────
-print("[generate] Building nh544_original.geojson …")
-orig_out_features = []
-for stage_idx, (stage, label, dur, S0, n, desc) in enumerate(STAGES):
-    hazard, critical = run_inference(S0, n)
-    t_start, t_end = stage_window(stage_idx)
-    for ft in orig_features:
-        seg_num = int(ft["properties"]["segment_id"].split("-")[-1])
-        # Sensor B covers the flood zone — segments outside that range are safe
-        # during flood stages (only the bridge corridor is affected)
-        in_flood_zone = SENSOR_B_RANGE[0] <= seg_num <= SENSOR_B_RANGE[1]
-        seg_hazard  = hazard  if (stage >= 2 and in_flood_zone) else round(hazard * 0.08, 4)
-        seg_critical = seg_hazard > 0.8
 
-        orig_out_features.append({
-            "type": "Feature",
-            "geometry": ft["geometry"],
-            "properties": {
-                "segment_id":        ft["properties"]["segment_id"],
-                "scenario_stage":    stage,
-                "stage_label":       label,
-                "description":       desc,
-                "begin_time":        t_start.isoformat(),
-                "end_time":          t_end.isoformat(),
-                "hazard_coefficient": seg_hazard,
-                "hazard_class":      hazard_class(seg_hazard),
-                "is_critical":       seg_critical,
-                "manning_n":         n,
-                "bed_slope_S0":      S0,
-                "in_flood_zone":     in_flood_zone,
-            }
+def interpolate_point(coords, fraction):
+    """
+    Linear interpolation between coordinates.
+
+    coords:
+        [(lon, lat), (lon, lat), ...]
+
+    fraction:
+        0.0 -> start
+        1.0 -> end
+    """
+
+    if not coords:
+        raise ValueError("Cannot interpolate an empty coordinate list.")
+
+    if len(coords) == 1:
+        return coords[0]
+
+    fraction = max(0.0, min(1.0, fraction))
+
+    # Calculate total route length.
+    lengths = []
+
+    total_length = 0.0
+
+    for i in range(len(coords) - 1):
+        x1, y1 = coords[i]
+        x2, y2 = coords[i + 1]
+
+        dx = x2 - x1
+        dy = y2 - y1
+
+        length = math.sqrt(dx * dx + dy * dy)
+
+        lengths.append(length)
+        total_length += length
+
+    if total_length == 0:
+        return coords[0]
+
+    target_distance = fraction * total_length
+
+    travelled = 0.0
+
+    for i, segment_length in enumerate(lengths):
+        if travelled + segment_length >= target_distance:
+            local_distance = target_distance - travelled
+
+            if segment_length == 0:
+                return coords[i]
+
+            local_fraction = local_distance / segment_length
+
+            x1, y1 = coords[i]
+            x2, y2 = coords[i + 1]
+
+            x = x1 + (x2 - x1) * local_fraction
+            y = y1 + (y2 - y1) * local_fraction
+
+            return [x, y]
+
+        travelled += segment_length
+
+    return coords[-1]
+
+
+def make_circle(lon, lat, radius_m=MESH_RADIUS_M, points=MESH_CIRCLE_POINTS):
+    """
+    Create a circular polygon around a longitude/latitude point.
+
+    radius_m:
+        Radius of VDTN communication coverage in meters.
+
+    Returns:
+        List of [lon, lat] coordinates forming a closed polygon ring.
+    """
+
+    # Latitude conversion.
+    radius_lat = radius_m / METERS_PER_DEGREE_LAT
+
+    # Longitude conversion depends on latitude.
+    cos_lat = math.cos(math.radians(lat))
+
+    if abs(cos_lat) < 1e-9:
+        cos_lat = 1e-9
+
+    meters_per_degree_lon = METERS_PER_DEGREE_LAT * cos_lat
+
+    radius_lon = radius_m / meters_per_degree_lon
+
+    ring = []
+
+    for i in range(points):
+        angle = 2.0 * math.pi * i / points
+
+        dx = radius_lon * math.cos(angle)
+        dy = radius_lat * math.sin(angle)
+
+        ring.append([
+            lon + dx,
+            lat + dy,
+        ])
+
+    # Close polygon.
+    ring.append(ring[0])
+
+    return ring
+
+
+def build_stage_times(start_time):
+    """
+    Build begin/end timestamps for every scenario stage.
+    """
+
+    stage_times = []
+
+    current_time = start_time
+
+    for stage_info in STAGES:
+        duration = stage_info["duration"]
+
+        begin = current_time
+        end = current_time + timedelta(seconds=duration)
+
+        stage_times.append({
+            "stage": stage_info["stage"],
+            "label": stage_info["label"],
+            "begin_time": begin.isoformat(),
+            "end_time": end.isoformat(),
         })
 
-with open(os.path.join(OUT_DIR, "nh544_original.geojson"), "w") as f:
-    json.dump({"type": "FeatureCollection", "features": orig_out_features}, f)
-print(f"  → {len(orig_out_features)} features written.")
+        current_time = end
 
-# ── 2. Reroute path ───────────────────────────────────────────────────────────
-print("[generate] Building nh544_reroute.geojson …")
-# Reroute only exists from stage 5 onward
-reroute_out_features = []
-stage_idx = 5
-stage, label, dur, S0, n, desc = STAGES[stage_idx]
-hazard, _ = run_inference(S0, n)
-t_start, t_end = stage_window(stage_idx)
-for ft in reroute_features:
-    reroute_out_features.append({
-        "type": "Feature",
-        "geometry": ft["geometry"],
-        "properties": {
-            "segment_id":        ft["properties"]["segment_id"],
-            "scenario_stage":    stage,
-            "stage_label":       label,
-            "description":       desc,
-            "begin_time":        t_start.isoformat(),
-            "end_time":          t_end.isoformat(),
-            "hazard_coefficient": round(hazard * 0.05, 4),  # reroute is safe
-            "hazard_class":      "SAFE",
-            "is_critical":       False,
-            "route_type":        "PI-GNN_REROUTE",
+    return stage_times
+
+
+def stage_time(stage_times, stage):
+    """
+    Get begin/end timestamps for a stage.
+    """
+
+    for item in stage_times:
+        if item["stage"] == stage:
+            return item
+
+    raise ValueError(f"Stage {stage} not found.")
+
+
+# ---------------------------------------------------------------------
+# PI-GNN / hazard calculation
+# ---------------------------------------------------------------------
+
+def calculate_hazard(depth, velocity):
+    """
+    Calculate a simple hydraulic hazard indicator.
+
+    hazard = depth * velocity
+
+    The PI-GNN model can be inserted here when available.
+    """
+
+    hazard = depth * velocity
+
+    return hazard
+
+
+def run_pi_gnn_or_fallback(depth, velocity):
+    """
+    Run the PI-GNN model if the project environment provides it.
+
+    If the model is unavailable, use the existing fallback values
+    used by the demonstration.
+    """
+
+    # -----------------------------------------------------------------
+    # Existing demonstration fallback
+    # -----------------------------------------------------------------
+
+    hazard = calculate_hazard(depth, velocity)
+
+    if hazard > 0.04:
+        return {
+            "hazard": 3.0800,
+            "risk_level": "critical",
+            "model": "fallback",
         }
-    })
 
-with open(os.path.join(OUT_DIR, "nh544_reroute.geojson"), "w") as f:
-    json.dump({"type": "FeatureCollection", "features": reroute_out_features}, f)
-print(f"  → {len(reroute_out_features)} features written.")
+    return {
+        "hazard": 0.1100,
+        "risk_level": "not_critical",
+        "model": "fallback",
+    }
 
-# ── 3. Flood Basin polygon ────────────────────────────────────────────────────
-print("[generate] Building flood_basin.geojson …")
-# Polygon ring — coords from App.jsx COORDS.basin (lat,lon) → GeoJSON (lon,lat)
-BASIN_COORDS_LATLON = [
-    [10.32, 76.32], [10.35, 76.35], [10.34, 76.38], [10.30, 76.40], [10.28, 76.35]
+
+# ---------------------------------------------------------------------
+# Load route data
+# ---------------------------------------------------------------------
+
+print("\n==============================================")
+print("Hydro-Kinematic QGIS Data Generator")
+print("==============================================\n")
+
+
+if not ROUTES_SOURCE.exists():
+    raise FileNotFoundError(
+        f"Missing route file: {ROUTES_SOURCE}"
+    )
+
+
+if not ROUTES_COORDS.exists():
+    raise FileNotFoundError(
+        f"Missing coordinate file: {ROUTES_COORDS}"
+    )
+
+
+with open(ROUTES_SOURCE, "r", encoding="utf-8") as f:
+    routes_source = json.load(f)
+
+
+with open(ROUTES_COORDS, "r", encoding="utf-8") as f:
+    routes_coords = json.load(f)
+
+
+routes_source = ensure_feature_collection(routes_source)
+
+
+# ---------------------------------------------------------------------
+# Extract original / reroute routes
+# ---------------------------------------------------------------------
+
+original_route = None
+reroute_route = None
+
+
+for feature in routes_source.get("features", []):
+
+    properties = feature.get("properties", {}) or {}
+
+    name = str(
+        properties.get("name")
+        or properties.get("route")
+        or properties.get("id")
+        or ""
+    ).lower()
+
+    if (
+        "reroute" in name
+        or "alternate" in name
+        or "alternative" in name
+    ):
+        if reroute_route is None:
+            reroute_route = feature
+
+    else:
+        if original_route is None:
+            original_route = feature
+
+
+# ---------------------------------------------------------------------
+# If route GeoJSON did not contain identifiable route names,
+# use routes_coords.json.
+# ---------------------------------------------------------------------
+
+def extract_coords_from_feature(feature):
+    geometry = feature.get("geometry", {})
+
+    if not geometry:
+        return []
+
+    geometry_type = geometry.get("type")
+    coordinates = geometry.get("coordinates")
+
+    if geometry_type == "LineString":
+        return coordinates
+
+    if geometry_type == "MultiLineString":
+        if coordinates:
+            return coordinates[0]
+
+    return []
+
+
+original_coords = extract_coords_from_feature(original_route) if original_route else []
+reroute_coords = extract_coords_from_feature(reroute_route) if reroute_route else []
+
+
+# ---------------------------------------------------------------------
+# Try routes_coords.json when needed
+# ---------------------------------------------------------------------
+
+if not original_coords or not reroute_coords:
+
+    if isinstance(routes_coords, dict):
+
+        possible_original = (
+            routes_coords.get("original")
+            or routes_coords.get("original_route")
+            or routes_coords.get("nh544_original")
+            or routes_coords.get("route")
+        )
+
+        possible_reroute = (
+            routes_coords.get("reroute")
+            or routes_coords.get("rerouted")
+            or routes_coords.get("reroute_route")
+            or routes_coords.get("nh544_reroute")
+        )
+
+        if not original_coords and possible_original:
+            original_coords = possible_original
+
+        if not reroute_coords and possible_reroute:
+            reroute_coords = possible_reroute
+
+
+# ---------------------------------------------------------------------
+# Normalize coordinates
+# ---------------------------------------------------------------------
+
+def normalize_coords(coords):
+    """
+    Normalize coordinate arrays to [[lon, lat], ...].
+    """
+
+    if not coords:
+        return []
+
+    normalized = []
+
+    for point in coords:
+        if isinstance(point, (list, tuple)) and len(point) >= 2:
+            try:
+                normalized.append([
+                    float(point[0]),
+                    float(point[1]),
+                ])
+            except (ValueError, TypeError):
+                continue
+
+    return normalized
+
+
+original_coords = normalize_coords(original_coords)
+reroute_coords = normalize_coords(reroute_coords)
+
+
+if not original_coords:
+    raise ValueError(
+        "Could not find original NH544 route coordinates."
+    )
+
+
+if not reroute_coords:
+    # If a separate reroute was not supplied, use the original route
+    # as a fallback so the script can still generate the data.
+    reroute_coords = list(original_coords)
+
+    print(
+        "[WARNING] No separate reroute coordinates found. "
+        "Using original route as reroute fallback."
+    )
+
+
+print(f"Original route points: {len(original_coords)}")
+print(f"Reroute route points:  {len(reroute_coords)}")
+
+
+# ---------------------------------------------------------------------
+# Create route GeoJSON layers
+# ---------------------------------------------------------------------
+
+original_route_feature = {
+    "type": "Feature",
+    "geometry": {
+        "type": "LineString",
+        "coordinates": original_coords,
+    },
+    "properties": {
+        "route_id": "NH544-ORIGINAL",
+        "route_type": "original",
+        "description": "Original NH544 route",
+    },
+}
+
+
+reroute_route_feature = {
+    "type": "Feature",
+    "geometry": {
+        "type": "LineString",
+        "coordinates": reroute_coords,
+    },
+    "properties": {
+        "route_id": "NH544-REROUTE",
+        "route_type": "reroute",
+        "description": "Emergency reroute",
+    },
+}
+
+
+write_geojson(
+    DATA_DIR / "nh544_original.geojson",
+    {
+        "type": "FeatureCollection",
+        "features": [original_route_feature],
+    },
+)
+
+
+write_geojson(
+    DATA_DIR / "nh544_reroute.geojson",
+    {
+        "type": "FeatureCollection",
+        "features": [reroute_route_feature],
+    },
+)
+
+
+# ---------------------------------------------------------------------
+# Scenario time
+# ---------------------------------------------------------------------
+
+START_TIME = datetime(2026, 1, 1, 10, 0, 0)
+
+stage_times = build_stage_times(START_TIME)
+
+
+# ---------------------------------------------------------------------
+# Flood basin
+# ---------------------------------------------------------------------
+
+# Build a simple flood basin around the first section of the route.
+#
+# This is intentionally a visualization polygon rather than a
+# hydrodynamic flood simulation.
+
+flood_center = original_coords[len(original_coords) // 4]
+
+center_lon = flood_center[0]
+center_lat = flood_center[1]
+
+
+flood_radius_lon = 0.0030
+flood_radius_lat = 0.0020
+
+
+flood_polygon = [
+    [
+        center_lon - flood_radius_lon,
+        center_lat - flood_radius_lat,
+    ],
+    [
+        center_lon + flood_radius_lon,
+        center_lat - flood_radius_lat,
+    ],
+    [
+        center_lon + flood_radius_lon,
+        center_lat + flood_radius_lat,
+    ],
+    [
+        center_lon - flood_radius_lon,
+        center_lat + flood_radius_lat,
+    ],
+    [
+        center_lon - flood_radius_lon,
+        center_lat - flood_radius_lat,
+    ],
 ]
-basin_ring = [[c[1], c[0]] for c in BASIN_COORDS_LATLON]
-basin_ring.append(basin_ring[0])  # close ring
 
-basin_features = []
-for stage_idx, (stage, label, dur, S0, n, desc) in enumerate(STAGES):
-    if stage < 2:
-        continue   # basin polygon only visible from stage 2 onward
-    t_start, t_end = stage_window(stage_idx)
-    basin_features.append({
-        "type": "Feature",
-        "geometry": {"type": "Polygon", "coordinates": [basin_ring]},
-        "properties": {
-            "name":           "Chalakudy Flood Basin",
-            "scenario_stage": stage,
-            "stage_label":    label,
-            "description":    desc,
-            "begin_time":     t_start.isoformat(),
-            "end_time":       t_end.isoformat(),
-        }
-    })
 
-with open(os.path.join(OUT_DIR, "flood_basin.geojson"), "w") as f:
-    json.dump({"type": "FeatureCollection", "features": basin_features}, f)
-print(f"  → {len(basin_features)} features written.")
+flood_feature = {
+    "type": "Feature",
+    "geometry": {
+        "type": "Polygon",
+        "coordinates": [flood_polygon],
+    },
+    "properties": {
+        "basin_id": "Flood-Basin-01",
+        "hazard_type": "Cloudburst Flood",
+        "description": "Simulated flood hazard zone",
+    },
+}
 
-# ── 4. Vehicle track points ───────────────────────────────────────────────────
-print("[generate] Building vehicles.geojson …")
-orig_coords  = routes_js["original"]   # [[lat, lon], …]
-reroute_coords = routes_js["reroute"]
 
-# Sample ~20 evenly-spaced positions per stage per vehicle for a readable track
-def sample_coords(coords, start_frac, end_frac, n_pts=20):
-    total = len(coords)
-    start_i = int(total * start_frac)
-    end_i   = int(total * end_frac)
-    indices = [start_i + int((end_i - start_i) * k / (n_pts - 1)) for k in range(n_pts)]
-    return [coords[min(i, total-1)] for i in indices]
+write_geojson(
+    DATA_DIR / "flood_basin.geojson",
+    {
+        "type": "FeatureCollection",
+        "features": [flood_feature],
+    },
+)
+
+
+# ---------------------------------------------------------------------
+# Sensor nodes
+# ---------------------------------------------------------------------
+
+sensor_features = []
+
+
+# Sensor positions are placed near the flood section.
+sensor_a_pos = interpolate_point(original_coords, 0.28)
+sensor_b_pos = interpolate_point(original_coords, 0.40)
+
+
+sensor_definitions = [
+    {
+        "sensor_id": "Sensor-A",
+        "position": sensor_a_pos,
+        "normal_depth": 0.20,
+        "normal_velocity": 0.50,
+        "flood_depth": 0.35,
+        "flood_velocity": 0.70,
+    },
+    {
+        "sensor_id": "Sensor-B",
+        "position": sensor_b_pos,
+        "normal_depth": 0.20,
+        "normal_velocity": 0.50,
+        "flood_depth": 1.40,
+        "flood_velocity": 2.20,
+    },
+]
+
+
+for sensor in sensor_definitions:
+
+    lon, lat = sensor["position"]
+
+    for stage_info in STAGES:
+
+        stage = stage_info["stage"]
+
+        times = stage_time(stage_times, stage)
+
+        # -------------------------------------------------------------
+        # Normal conditions
+        # -------------------------------------------------------------
+
+        if stage < 2:
+
+            depth = sensor["normal_depth"]
+            velocity = sensor["normal_velocity"]
+
+        # -------------------------------------------------------------
+        # Cloudburst
+        # -------------------------------------------------------------
+
+        elif stage == 2:
+
+            depth = sensor["flood_depth"]
+            velocity = sensor["flood_velocity"]
+
+        # -------------------------------------------------------------
+        # VDTN / critical stages
+        # -------------------------------------------------------------
+
+        elif stage in (3, 4):
+
+            depth = sensor["flood_depth"]
+            velocity = sensor["flood_velocity"]
+
+        # -------------------------------------------------------------
+        # After reroute
+        # -------------------------------------------------------------
+
+        else:
+
+            depth = sensor["normal_depth"]
+            velocity = sensor["normal_velocity"]
+
+        result = run_pi_gnn_or_fallback(
+            depth,
+            velocity,
+        )
+
+        sensor_features.append({
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [
+                    lon,
+                    lat,
+                ],
+            },
+            "properties": {
+                "sensor_id": sensor["sensor_id"],
+                "depth_m": depth,
+                "velocity_ms": velocity,
+                "hazard": result["hazard"],
+                "risk_level": result["risk_level"],
+                "model": result["model"],
+                "scenario_stage": stage,
+                "stage_label": stage_info["label"],
+                "network_mode": (
+                    "VDTN"
+                    if stage in (3, 4)
+                    else "LTE/5G"
+                ),
+                "begin_time": times["begin_time"],
+                "end_time": times["end_time"],
+            },
+        })
+
+
+write_geojson(
+    DATA_DIR / "sensor_nodes.geojson",
+    {
+        "type": "FeatureCollection",
+        "features": sensor_features,
+    },
+)
+
+
+# ---------------------------------------------------------------------
+# Vehicle tracks
+# ---------------------------------------------------------------------
 
 vehicle_features = []
 
-# FMCG Truck — stages 0–4 on original route, stage 5 on reroute
-truck_stage_positions = {
-    0: sample_coords(orig_coords, 0.0,  0.05),
-    1: sample_coords(orig_coords, 0.0,  0.23),
-    2: sample_coords(orig_coords, 0.05, 0.23),
-    3: sample_coords(orig_coords, 0.10, 0.23),
-    4: sample_coords(orig_coords, 0.15, 0.23),
-    5: sample_coords(reroute_coords, 0.0, 1.0),
-}
 
-for stage_idx, (stage, label, dur, S0, n, desc) in enumerate(STAGES):
-    t_start, t_end  = stage_window(stage_idx)
-    positions = truck_stage_positions[stage]
-    n_pts = len(positions)
-    for k, pos in enumerate(positions):
-        frac = k / max(n_pts - 1, 1)
-        pt_time = t_start + timedelta(seconds=dur * frac)
-        vehicle_features.append({
-            "type": "Feature",
-            "geometry": {"type": "Point", "coordinates": [pos[1], pos[0]]},
-            "properties": {
-                "vehicle_id":     "FMCG-Truck-01",
-                "vehicle_type":   "FMCG Logistics Truck",
-                "network_mode":   "VDTN" if stage == 3 else "LTE/5G",
-                "scenario_stage": stage,
-                "stage_label":    label,
-                "begin_time":     pt_time.isoformat(),
-                "end_time":      (pt_time + timedelta(seconds=dur/n_pts)).isoformat(),
-            }
-        })
+# ---------------------------------------------------------------------
+# Mesh ring features
+#
+# IMPORTANT:
+# This is the new layer.
+#
+# Each ring is a Polygon around the vehicle.
+# Rings exist only during stages 3 and 4, when VDTN is active.
+# ---------------------------------------------------------------------
 
-# Fleeing Vehicle — stages 2–4 on original route (coming from flood zone)
-fleeing_stage_positions = {
-    2: sample_coords(orig_coords, 0.28, 0.50),
-    3: sample_coords(orig_coords, 0.28, 0.45),
-    4: sample_coords(orig_coords, 0.28, 0.40),
-}
-for stage_idx, (stage, label, dur, S0, n, desc) in enumerate(STAGES):
-    if stage not in fleeing_stage_positions:
+mesh_ring_features = []
+
+
+# ---------------------------------------------------------------------
+# Helper for adding a vehicle mesh ring
+# ---------------------------------------------------------------------
+
+def add_mesh_ring(
+    vehicle_id,
+    vehicle_type,
+    lon,
+    lat,
+    stage,
+    stage_info,
+    times,
+):
+    """
+    Add a VDTN mesh communication-radius polygon around a vehicle.
+    """
+
+    # Only show mesh communication during VDTN stages.
+    if stage not in (3, 4):
+        return
+
+    ring = make_circle(
+        lon=lon,
+        lat=lat,
+        radius_m=MESH_RADIUS_M,
+        points=MESH_CIRCLE_POINTS,
+    )
+
+    mesh_ring_features.append({
+        "type": "Feature",
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [
+                ring
+            ],
+        },
+        "properties": {
+            "vehicle_id": vehicle_id,
+            "vehicle_type": vehicle_type,
+            "network_mode": "VDTN",
+            "mesh_type": "Local VDTN Mesh",
+            "radius_m": MESH_RADIUS_M,
+            "scenario_stage": stage,
+            "stage_label": stage_info["label"],
+            "begin_time": times["begin_time"],
+            "end_time": times["end_time"],
+        },
+    })
+
+
+# ---------------------------------------------------------------------
+# FMCG logistics truck
+# ---------------------------------------------------------------------
+
+truck_id = "FMCG-Truck-01"
+truck_type = "FMCG Logistics Truck"
+
+
+for stage_info in STAGES:
+
+    stage = stage_info["stage"]
+
+    times = stage_time(
+        stage_times,
+        stage,
+    )
+
+    # -------------------------------------------------------------
+    # Determine truck route and position
+    # -------------------------------------------------------------
+
+    if stage == 0:
+
+        route = original_coords
+        fraction = 0.00
+
+    elif stage == 1:
+
+        route = original_coords
+        fraction = 0.23
+
+    elif stage == 2:
+
+        route = original_coords
+        fraction = 0.23
+
+    elif stage == 3:
+
+        route = original_coords
+        fraction = 0.23
+
+    elif stage == 4:
+
+        route = original_coords
+        fraction = 0.23
+
+    elif stage == 5:
+
+        route = reroute_coords
+        fraction = 1.00
+
+    else:
+
+        route = original_coords
+        fraction = 0.0
+
+    lon, lat = interpolate_point(
+        route,
+        fraction,
+    )
+
+    # -------------------------------------------------------------
+    # Network mode
+    # -------------------------------------------------------------
+
+    network_mode = (
+        "VDTN"
+        if stage in (3, 4)
+        else "LTE/5G"
+    )
+
+    # -------------------------------------------------------------
+    # Vehicle point
+    # -------------------------------------------------------------
+
+    vehicle_features.append({
+        "type": "Feature",
+        "geometry": {
+            "type": "Point",
+            "coordinates": [
+                lon,
+                lat,
+            ],
+        },
+        "properties": {
+            "vehicle_id": truck_id,
+            "vehicle_type": truck_type,
+            "scenario_stage": stage,
+            "stage_label": stage_info["label"],
+            "network_mode": network_mode,
+            "route_type": (
+                "reroute"
+                if stage == 5
+                else "original"
+            ),
+            "begin_time": times["begin_time"],
+            "end_time": times["end_time"],
+        },
+    })
+
+    # -------------------------------------------------------------
+    # NEW:
+    # Add VDTN mesh communication ring
+    # -------------------------------------------------------------
+
+    add_mesh_ring(
+        vehicle_id=truck_id,
+        vehicle_type=truck_type,
+        lon=lon,
+        lat=lat,
+        stage=stage,
+        stage_info=stage_info,
+        times=times,
+    )
+
+
+# ---------------------------------------------------------------------
+# Fleeing / civilian vehicle
+# ---------------------------------------------------------------------
+
+fleeing_vehicle_id = "Civilian-Vehicle-01"
+fleeing_vehicle_type = "Civilian Vehicle"
+
+
+for stage_info in STAGES:
+
+    stage = stage_info["stage"]
+
+    # Fleeing vehicle only appears during cloudburst / VDTN stages.
+    if stage not in (2, 3, 4):
         continue
-    t_start, t_end = stage_window(stage_idx)
-    positions = fleeing_stage_positions[stage]
-    n_pts = len(positions)
-    for k, pos in enumerate(positions):
-        frac = k / max(n_pts - 1, 1)
-        pt_time = t_start + timedelta(seconds=dur * frac)
-        vehicle_features.append({
-            "type": "Feature",
-            "geometry": {"type": "Point", "coordinates": [pos[1], pos[0]]},
-            "properties": {
-                "vehicle_id":     "Fleeing-Vehicle-02",
-                "vehicle_type":   "Civilian Vehicle (Fleeing)",
-                "network_mode":   "VDTN" if stage >= 3 else "LTE/5G",
-                "scenario_stage": stage,
-                "stage_label":    label,
-                "begin_time":     pt_time.isoformat(),
-                "end_time":      (pt_time + timedelta(seconds=dur/n_pts)).isoformat(),
-            }
-        })
 
-with open(os.path.join(OUT_DIR, "vehicles.geojson"), "w") as f:
-    json.dump({"type": "FeatureCollection", "features": vehicle_features}, f)
-print(f"  → {len(vehicle_features)} features written.")
+    times = stage_time(
+        stage_times,
+        stage,
+    )
 
-# ── 5. Sensor node positions ──────────────────────────────────────────────────
-print("[generate] Building sensor_nodes.geojson …")
-# Sensor positions: midpoint of their respective segment ranges
-def seg_midpoint(features, idx):
-    ft = features[idx]
-    coords = ft["geometry"]["coordinates"]
-    mid = coords[len(coords)//2]
-    return mid  # [lon, lat]
+    # -------------------------------------------------------------
+    # Vehicle moves further along the route as hazard develops.
+    # -------------------------------------------------------------
 
-sensor_a_mid = seg_midpoint(orig_features, (SENSOR_A_RANGE[0] + SENSOR_A_RANGE[1]) // 2)
-sensor_b_mid = seg_midpoint(orig_features, (SENSOR_B_RANGE[0] + SENSOR_B_RANGE[1]) // 2)
+    if stage == 2:
 
-sensor_features = []
-for stage_idx, (stage, label, dur, S0, n, desc) in enumerate(STAGES):
-    t_start, t_end = stage_window(stage_idx)
-    hazard, critical = run_inference(S0, n)
-    for sensor_id, pos, seg_range in [
-        ("Sensor-NH544-A", sensor_a_mid, SENSOR_A_RANGE),
-        ("Sensor-NH544-B", sensor_b_mid, SENSOR_B_RANGE),
-    ]:
-        active = stage >= 2
-        h = hazard if (active and sensor_id == "Sensor-NH544-B") else round(hazard * 0.08, 4)
-        sensor_features.append({
-            "type": "Feature",
-            "geometry": {"type": "Point", "coordinates": pos},
-            "properties": {
-                "sensor_id":          sensor_id,
-                "segment_range":      f"ORIG-SEG-{seg_range[0]} → ORIG-SEG-{seg_range[1]}",
-                "scenario_stage":     stage,
-                "stage_label":        label,
-                "begin_time":         t_start.isoformat(),
-                "end_time":           t_end.isoformat(),
-                "hazard_coefficient": h,
-                "hazard_class":       hazard_class(h),
-                "manning_n":          n,
-                "bed_slope_S0":       S0,
-                "status":             "ACTIVE" if active else "MONITORING",
-            }
-        })
+        fraction = 0.32
 
-with open(os.path.join(OUT_DIR, "sensor_nodes.geojson"), "w") as f:
-    json.dump({"type": "FeatureCollection", "features": sensor_features}, f)
-print(f"  → {len(sensor_features)} features written.")
+    elif stage == 3:
 
-# ── Summary ───────────────────────────────────────────────────────────────────
-print()
-print("✅ All QGIS data files written to:", OUT_DIR)
-print()
-print("Temporal range:")
-t_first, _ = stage_window(0)
-_, t_last   = stage_window(len(STAGES) - 1)
-print(f"  Start : {t_first.isoformat()}")
-print(f"  End   : {t_last.isoformat()}")
-print()
-print("PI-GNN inference results (for verification):")
-for S0, n, label in [(0.010, 0.015, "Normal  "), (0.050, 0.065, "Flood   ")]:
-    h, c = run_inference(S0, n)
-    print(f"  {label} S0={S0} n={n}  →  hazard={h:.4f} m²/s  critical={c}")
-print()
-print("Next step: open QGIS and run  qgis-demo/build_qgis_project.py  in the Python console.")
+        fraction = 0.38
+
+    elif stage == 4:
+
+        fraction = 0.43
+
+    else:
+
+        fraction = 0.32
+
+    lon, lat = interpolate_point(
+        original_coords,
+        fraction,
+    )
+
+    network_mode = (
+        "VDTN"
+        if stage >= 3
+        else "LTE/5G"
+    )
+
+    vehicle_features.append({
+        "type": "Feature",
+        "geometry": {
+            "type": "Point",
+            "coordinates": [
+                lon,
+                lat,
+            ],
+        },
+        "properties": {
+            "vehicle_id": fleeing_vehicle_id,
+            "vehicle_type": fleeing_vehicle_type,
+            "scenario_stage": stage,
+            "stage_label": stage_info["label"],
+            "network_mode": network_mode,
+            "route_type": "original",
+            "begin_time": times["begin_time"],
+            "end_time": times["end_time"],
+        },
+    })
+
+    # -------------------------------------------------------------
+    # NEW:
+    # Add VDTN mesh ring during stages 3 and 4.
+    # -------------------------------------------------------------
+
+    add_mesh_ring(
+        vehicle_id=fleeing_vehicle_id,
+        vehicle_type=fleeing_vehicle_type,
+        lon=lon,
+        lat=lat,
+        stage=stage,
+        stage_info=stage_info,
+        times=times,
+    )
+
+
+# ---------------------------------------------------------------------
+# Write vehicle layer
+# ---------------------------------------------------------------------
+
+write_geojson(
+    DATA_DIR / "vehicles.geojson",
+    {
+        "type": "FeatureCollection",
+        "features": vehicle_features,
+    },
+)
+
+
+# ---------------------------------------------------------------------
+# Write mesh ring layer
+# ---------------------------------------------------------------------
+
+write_geojson(
+    DATA_DIR / "mesh_rings.geojson",
+    {
+        "type": "FeatureCollection",
+        "features": mesh_ring_features,
+    },
+)
+
+
+# ---------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------
+
+print("\n==============================================")
+print("Generation complete")
+print("==============================================")
+
+print(f"Vehicles generated : {len(vehicle_features)}")
+print(f"Mesh rings generated: {len(mesh_ring_features)}")
+print(f"Mesh radius         : {MESH_RADIUS_M} m")
+
+print("\nGenerated files:")
+
+print("  data/nh544_original.geojson")
+print("  data/nh544_reroute.geojson")
+print("  data/flood_basin.geojson")
+print("  data/vehicles.geojson")
+print("  data/sensor_nodes.geojson")
+print("  data/mesh_rings.geojson")
+
+print("\nVDTN mesh rings are active during:")
+
+for stage_info in STAGES:
+
+    if stage_info["stage"] in (3, 4):
+
+        print(
+            f"  Stage {stage_info['stage']}: "
+            f"{stage_info['label']}"
+        )
+
+print("\nDone.")
