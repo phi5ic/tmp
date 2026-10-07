@@ -63,7 +63,7 @@ if not os.path.exists(ROUTES_JS):
 try:
     sys.path.insert(0, os.path.join(os.path.dirname(HERE), "pi-gnn"))
     import torch
-    from core.model import PIGNN, calculate_hazard_coefficient, seed_and_train
+    from model import PIGNN, calculate_hazard_coefficient, seed_and_train
 
     _model = PIGNN(node_features=4, hidden_dim=16, output_features=2)
     seed_and_train(_model)

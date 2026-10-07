@@ -32,8 +32,7 @@ import torch
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-from core.model import PIGNN, calculate_hazard_coefficient, seed_and_train
-from core.router import get_router
+from model import PIGNN, calculate_hazard_coefficient, seed_and_train
 
 # BAW connector — called asynchronously when a critical threshold is breached
 BAW_ENDPOINT = os.environ.get(
@@ -55,14 +54,6 @@ log = logging.getLogger(__name__)
 _MODEL = PIGNN(node_features=4, hidden_dim=16, output_features=2)
 seed_and_train(_MODEL)
 log.info("[Code Engine] PI-GNN model loaded, seeded, and ready (DEMO_SEED=1).")
-
-# ── Pre-load A* router (built once, updated on each inference) ───────────────
-_ROUTER = get_router()
-log.info("[Code Engine] A* router graph loaded (%d segments).", _ROUTER.segment_count)
-
-# Custom dynamic routing globals
-_custom_origin = None
-_custom_destination = None
 
 app = Flask(__name__)
 # Allow browser clients (digital-twin WebGL canvas) to consume the SSE stream
@@ -137,27 +128,6 @@ def health():
     return jsonify({"status": "ok"}), 200
 
 
-@app.route("/set_route", methods=["POST"])
-def set_route():
-    global _custom_origin, _custom_destination
-    body = request.get_json(silent=True)
-    if body and "origin" in body and "destination" in body:
-        _custom_origin = tuple(body["origin"])
-        _custom_destination = tuple(body["destination"])
-        
-        # Trigger an immediate reroute push based on current graph state
-        path_result = _ROUTER.find_path(_custom_origin, _custom_destination)
-        if path_result.found:
-            notify_clients({
-                "type":        "REROUTE_UPDATE",
-                "geojson":     path_result.geojson,
-                "is_rerouted": path_result.is_rerouted,
-                "length_m":    path_result.length_m,
-            })
-        return jsonify({"status": "ok", "found": path_result.found}), 200
-    return jsonify({"error": "invalid payload"}), 400
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # IBM Event Streams webhook endpoint
 #
@@ -226,9 +196,6 @@ def infer():
     else:
         severity_class = "CRITICAL"
 
-    # Update A* router edge weights
-    _ROUTER.update_hazard(node_id, hazard)
-
     # Push to all connected digital twin WebGL canvases via SSE
     # Segment IDs are derived from the sensor node's geographic coverage
     notify_clients({
@@ -239,17 +206,6 @@ def infer():
         "severity_class":        severity_class,
         "affected_segment_ids":  _segment_ids_for_node(node_id),
     })
-
-    origin = _custom_origin if _custom_origin else _ROUTER.origin
-    destination = _custom_destination if _custom_destination else _ROUTER.destination
-    path_result = _ROUTER.find_path(origin, destination)
-    if path_result.found:
-        notify_clients({
-            "type":        "REROUTE_UPDATE",
-            "geojson":     path_result.geojson,
-            "is_rerouted": path_result.is_rerouted,
-            "length_m":    path_result.length_m,
-        })
 
     # HTTP 200 commits the Kafka offset; HTTP 5xx causes Event Streams retry
     return jsonify(result), 200

@@ -329,7 +329,7 @@ def _tool_drone_dispatch(args: dict[str, Any]):
         "priority":     priority,
         "triggered_by": node_id,
         "status":       "DISPATCHED",
-        "timestamp_utc": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "timestamp_utc": __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
         "source":       "HydroMesh-MCP-DroneDispatch",
     }
 
