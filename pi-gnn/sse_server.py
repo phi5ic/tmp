@@ -20,6 +20,7 @@ def create_event_stream():
     with _clients_lock:
         clients.append(q)
     try:
+        yield ": connected\n\n"
         while True:
             yield q.get()
     except GeneratorExit:

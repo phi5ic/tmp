@@ -1,6 +1,7 @@
 import os
 import logging
 import threading
+import time
 import requests
 import torch
 from flask import Flask, request, jsonify, Response
@@ -64,7 +65,42 @@ def set_route():
             "length_m": result.length_m
         })
         
-    return jsonify({"found": result.found, "length_m": result.length_m}), 200
+    return jsonify({
+        "found": result.found,
+        "length_m": result.length_m,
+        "is_rerouted": result.is_rerouted,
+        "geojson": result.geojson,
+    }), 200
+
+@app.route("/reports", methods=["POST"])
+def reports():
+    """Accept a driver/community report and fan it out to connected clients."""
+    body = request.get_json(silent=True) or {}
+    event_type = body.get("type")
+    location = body.get("location")
+    description = body.get("description")
+    coordinates = body.get("coordinates")
+
+    if not all(isinstance(value, str) and value.strip() for value in (event_type, location, description)):
+        return jsonify({"error": "type_location_description_required"}), 422
+    if not isinstance(coordinates, list) or len(coordinates) != 2:
+        return jsonify({"error": "coordinates_required"}), 422
+    try:
+        coordinates = [float(coordinates[0]), float(coordinates[1])]
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid_coordinates"}), 422
+
+    report = {
+        "type": "USER_REPORT",
+        "event_type": event_type.strip(),
+        "location": location.strip(),
+        "description": description.strip(),
+        "coordinates": coordinates,
+        "timestamp": time.time(),
+        "source": "community",
+    }
+    notify_clients(report)
+    return jsonify({"accepted": True, "report": report}), 201
 
 @app.route("/stream")
 def stream():
