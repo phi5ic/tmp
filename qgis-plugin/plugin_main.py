@@ -139,6 +139,20 @@ def _make_route_layer() -> QgsVectorLayer:
     return lyr
 
 
+def _load_flood_basin():
+    """Load the static flood basin polygon to visualize the hazard zone."""
+    import os
+    data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "simulation", "data")
+    path = os.path.join(data_dir, "flood_basin.geojson")
+    if os.path.exists(path):
+        from qgis.core import QgsVectorLayer, QgsFillSymbol, QgsSingleSymbolRenderer
+        lyr = QgsVectorLayer(path, "🌊 Flood Basin (Smoke Screen)", "ogr")
+        if lyr.isValid():
+            sym = QgsFillSymbol.createSimple({'color': '0,100,255,40', 'outline_color': '0,100,255,80'})
+            lyr.setRenderer(QgsSingleSymbolRenderer(sym))
+            return lyr
+    return None
+
 def _seed_segments_from_file(lyr: QgsVectorLayer) -> None:
     """
     If qgis-demo/data/nh544_original.geojson is present, load stage-0 segment
@@ -426,6 +440,7 @@ def start_realtime_stream(server_url: str = SERVER_URL) -> None:
     sensor_lyr  = _make_sensor_layer()
     segment_lyr = _make_segment_layer()
     route_lyr   = _make_route_layer()
+    flood_lyr   = _load_flood_basin()
     _seed_segments_from_file(segment_lyr)
 
     _apply_hazard_renderer(sensor_lyr,  geom_type="point")
@@ -448,6 +463,8 @@ def start_realtime_stream(server_url: str = SERVER_URL) -> None:
             project.layerTreeRoot().addLayer(basemap)
             print("[realtime] ✓ ESRI World Imagery basemap added.")
 
+    if flood_lyr:
+        project.addMapLayer(flood_lyr)
     project.addMapLayer(segment_lyr)
     project.addMapLayer(route_lyr)
     project.addMapLayer(sensor_lyr)   # sensors on top
