@@ -21,7 +21,10 @@ def create_event_stream():
         clients.append(q)
     try:
         while True:
-            yield q.get()
+            try:
+                yield q.get(timeout=15)
+            except queue.Empty:
+                yield ": heartbeat\n\n"
     except GeneratorExit:
         with _clients_lock:
             try:
