@@ -1,0 +1,90 @@
+{
+  "mcpVersion": "1.0.0",
+  "name": "hydro-kinematic-mesh",
+  "agent": "IBM Bob",
+  "capabilities": {
+    "spatialDataFetching": {
+      "enabled": true,
+      "providers": [
+        "copernicus",
+        "openStreetMap",
+        "ibmEnvironmentalIntelligenceSuite"
+      ],
+      "autoUpdateIntervalMs": 60000,
+      "region": {
+        "name": "NH544-Chalakudy-Basin",
+        "bbox": [76.3, 10.2, 76.4, 10.4]
+      }
+    },
+    "erpIntegration": {
+      "orchestrator": "watsonx",
+      "actions": [
+        {
+          "trigger": "hazard_coefficient_exceeded",
+          "threshold": 0.8,
+          "alertType": "critical_reroute",
+          "notifyRoles": ["fleet_manager", "logistics_coordinator"]
+        },
+        {
+          "trigger": "cellular_dead_zone_entered",
+          "condition": "offline_mode_active",
+          "alertType": "autonomous_drone_dispatch",
+          "actionPayload": {
+            "uav_type": "reconnaissance_quadcopter",
+            "flight_path": "NH544_Sector7_Corridor",
+            "priority": "emergency"
+          }
+        },
+        {
+          "trigger": "fmcg_inventory_delayed",
+          "delay_threshold_hours": 2,
+          "alertType": "supply_chain_rebalance",
+          "actionPayload": {
+            "api_endpoint": "/api/v1/inventory/reallocate",
+            "fallback_warehouse": "Cochin_Hub_02",
+            "notifyRoles": ["warehouse_director", "procurement"]
+          }
+        }
+      ]
+    }
+  },
+  "mcpServers": {
+    "hydro-kinematic-orchestrate": {
+      "description": "MCP connector exposing KSDMA inference and IBM Event Streams tools to watsonx Orchestrate skill-flows.",
+      "transport": "http",
+      "url": "${WATSONX_MCP_URL:-http://localhost:9090}",
+      "auth": {
+        "type": "api_key",
+        "headerName": "X-Api-Key",
+        "secretEnvVar": "MCP_API_KEY"
+      },
+      "endpoints": {
+        "toolsList": "/mcp/tools/list",
+        "toolsCall":  "/mcp/tools/call",
+        "health":     "/health"
+      },
+      "tools": [
+        {
+          "name": "ksdma_infer",
+          "description": "Run PI-GNN inference via KSDMA on a telemetry payload. Returns hazard coefficient (m²/s) and critical boolean.",
+          "trigger": "hazard_coefficient_exceeded"
+        },
+        {
+          "name": "event_streams_publish",
+          "description": "Publish a synthetic or replayed telemetry message to the IBM Event Streams Kafka topic.",
+          "trigger": "manual_injection"
+        },
+        {
+          "name": "event_streams_latest_offset",
+          "description": "Query the latest committed Kafka offset for audit and incident-close verification.",
+          "trigger": "incident_audit"
+        },
+        {
+          "name": "drone_dispatch",
+          "description": "Dispatch a reconnaissance UAV to an NH544 sector when a VDTN node enters a cellular dead zone.",
+          "trigger": "cellular_dead_zone_entered"
+        }
+      ]
+    }
+  }
+}
