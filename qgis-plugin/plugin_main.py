@@ -43,6 +43,7 @@ from qgis.core import (
     QgsCoordinateReferenceSystem,
     QgsSymbol,
     QgsRuleBasedRenderer,
+    QgsRasterLayer,
 )
 from qgis.PyQt.QtCore import QTimer, QVariant
 from qgis.PyQt.QtGui import QColor
@@ -437,6 +438,21 @@ def start_realtime_stream(server_url: str = SERVER_URL) -> None:
     _apply_route_renderer(route_lyr)
 
     project = QgsProject.instance()
+
+    # ── Add basemap if it doesn't exist ──────────────────────────────────────
+    basemap_name = "Carto Dark Matter"
+    if not project.mapLayersByName(basemap_name):
+        basemap_url = (
+            "type=xyz"
+            "&url=https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
+            "&zmax=19&zmin=0"
+        )
+        basemap = QgsRasterLayer(basemap_url, basemap_name, "wms")
+        if basemap.isValid():
+            project.addMapLayer(basemap, False)
+            project.layerTreeRoot().addLayer(basemap)
+            print("[realtime] ✓ Carto Dark Matter basemap added.")
+
     project.addMapLayer(route_lyr)
     project.addMapLayer(segment_lyr)
     project.addMapLayer(sensor_lyr)   # sensors on top
