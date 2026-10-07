@@ -24,7 +24,7 @@ seed_and_train(_MODEL)
 log.info("[Code Engine] PI-GNN model loaded, seeded, and ready (DEMO_SEED=1).")
 
 app = Flask(__name__)
-CORS(app, resources={r"/stream": {"origins": "*"}})
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 SENSOR_SEGMENT_MAP: dict[str, tuple[int, int]] = {
     "Sensor-NH544-A": (0,   206),

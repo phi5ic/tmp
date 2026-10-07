@@ -25,6 +25,7 @@ The backend now correctly integrates the PI-GNN tensor output with the A* pathfi
 
 * **Router Integration**: The webhook server now imports the router and dynamically updates hazard weights upon receiving `/infer` telemetry.
 * **`/set_route` Endpoint**: Added the `POST /set_route` endpoint required by the QGIS plugin for custom waypoint routing.
+* **CORS Policy Fix**: Updated the Flask CORS configuration from only `r"/stream"` to global `r"/*"`, allowing the frontend client to successfully `POST` to `/set_route` without being blocked by the browser.
 * **SSE REROUTE_UPDATE**: The server now triggers a real-time recalculation of the physical route and broadcasts the `REROUTE_UPDATE` payload (containing the new GeoJSON, length, and reroute status) to all connected clients.
 
 ## 4. Driver HUD Client Upgrades
