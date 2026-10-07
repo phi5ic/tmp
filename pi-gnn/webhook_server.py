@@ -8,6 +8,7 @@ from flask_cors import CORS
 
 from model import PIGNN, calculate_hazard_coefficient, seed_and_train
 from sse_server import notify_clients, create_event_stream
+from router import get_router
 
 BAW_ENDPOINT = os.environ.get(
     "BAW_ENDPOINT",
@@ -34,6 +35,36 @@ ORIG_SEG_TOTAL = 824
 def _segment_ids_for_node(node_id: str) -> list[str]:
     start, end = SENSOR_SEGMENT_MAP.get(node_id, (0, ORIG_SEG_TOTAL - 1))
     return [f"ORIG-SEG-{i}" for i in range(start, end + 1)]
+
+_current_origin = None
+_current_destination = None
+
+@app.route("/set_route", methods=["POST"])
+def set_route():
+    global _current_origin, _current_destination
+    body = request.get_json(silent=True) or {}
+    origin = body.get("origin")
+    destination = body.get("destination")
+    
+    if origin and destination:
+        _current_origin = tuple(origin)
+        _current_destination = tuple(destination)
+        
+    router = get_router()
+    orig = _current_origin or router.origin
+    dest = _current_destination or router.destination
+    
+    result = router.find_path(orig, dest)
+    
+    if result.found:
+        notify_clients({
+            "type": "REROUTE_UPDATE",
+            "geojson": result.geojson,
+            "is_rerouted": result.is_rerouted,
+            "length_m": result.length_m
+        })
+        
+    return jsonify({"found": result.found, "length_m": result.length_m}), 200
 
 @app.route("/stream")
 def stream():
@@ -110,6 +141,22 @@ def infer():
         "severity_class":        severity_class,
         "affected_segment_ids":  _segment_ids_for_node(node_id),
     })
+
+    router = get_router()
+    router.update_hazard(node_id, hazard)
+    
+    global _current_origin, _current_destination
+    orig = _current_origin or router.origin
+    dest = _current_destination or router.destination
+    
+    route_result = router.find_path(orig, dest)
+    if route_result.found:
+        notify_clients({
+            "type": "REROUTE_UPDATE",
+            "geojson": route_result.geojson,
+            "is_rerouted": route_result.is_rerouted,
+            "length_m": route_result.length_m
+        })
 
     return jsonify(result), 200
 
