@@ -109,14 +109,9 @@ def _make_sensor_layer() -> QgsVectorLayer:
 
 def _make_segment_layer() -> QgsVectorLayer:
     """
-    Create an in-memory Point layer representing road segment centroids.
-
-    A full LineString layer would require loading all 824 route geometries.
-    For real-time colour feedback the centroid points are sufficient and load
-    instantly.  If the static nh544_original.geojson is present we load real
-    geometries instead — see _seed_segments_from_file().
+    Create an in-memory LineString layer for road segments.
     """
-    uri = "Point?crs=EPSG:4326"
+    uri = "LineString?crs=EPSG:4326"
     lyr = QgsVectorLayer(uri, "🛣  NH544 Segments (Live)", "memory")
     pr  = lyr.dataProvider()
     pr.addAttributes([
@@ -168,18 +163,16 @@ def _seed_segments_from_file(lyr: QgsVectorLayer) -> None:
     for ft in stage0:
         geom_type = ft["geometry"]["type"]
         coords    = ft["geometry"]["coordinates"]
-        # Compute centroid lon/lat
-        if geom_type == "LineString":
-            mid = coords[len(coords) // 2]
-            lon, lat = mid[0], mid[1]
-        elif geom_type == "Point":
-            lon, lat = coords[0], coords[1]
-        else:
+        
+        if geom_type != "LineString":
             continue
 
         props = ft["properties"]
-        qf = QgsFeature()
-        qf.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(lon, lat)))
+        qf = QgsFeature(lyr.fields())
+        
+        geom = QgsGeometry.fromPolylineXY([QgsPointXY(c[0], c[1]) for c in coords])
+        qf.setGeometry(geom)
+            
         # Derive which sensor covers this segment
         seg_num = int(props["segment_id"].split("-")[-1])
         source  = "none"
@@ -219,6 +212,8 @@ def _apply_hazard_renderer(lyr: QgsVectorLayer, geom_type: str = "point") -> Non
         sym.setColor(colour)
         if geom_type == "point":
             sym.setSize(4.0 if "Sensor" in lyr.name() else 2.0)
+        elif geom_type == "line":
+            sym.setWidth(2.5)
         rule = QgsRuleBasedRenderer.Rule(sym)
         rule.setLabel(label)
         rule.setFilterExpression(expr)
@@ -434,7 +429,7 @@ def start_realtime_stream(server_url: str = SERVER_URL) -> None:
     _seed_segments_from_file(segment_lyr)
 
     _apply_hazard_renderer(sensor_lyr,  geom_type="point")
-    _apply_hazard_renderer(segment_lyr, geom_type="point")
+    _apply_hazard_renderer(segment_lyr, geom_type="line")
     _apply_route_renderer(route_lyr)
 
     project = QgsProject.instance()
