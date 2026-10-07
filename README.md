@@ -24,7 +24,7 @@ When cellular infrastructure drops (simulated in our dead zone), the edge nodes 
 *   **IBM Bob (MCP Integration)**: Automates enterprise ERP responses via **watsonx**, including drone dispatching and inventory reallocation triggers.
 
 ### 4. Geospatial Digital Twin
-A high-performance **React + Vite** control center utilizing **CartoDB Dark Matter** maps. It visually simulates the NH544 corridor, cloudburst hydrodynamics (Manning's $n$), cellular disruptions, and VDTN offline rerouting.
+A verifiable local **QGIS** project utilizing CartoDB Dark Matter basemaps. It visually simulates the NH544 corridor, cloudburst hydrodynamics, cellular disruptions, and VDTN offline rerouting.
 
 ### 5. Business Automation Layer *(new)*
 Three new components implement the fully autonomous enterprise response pipeline:
@@ -54,7 +54,6 @@ flowchart TD
     subgraph CE_PIGNN["☁️ IBM Cloud Code Engine — hydro-pi-gnn"]
         WEBHOOK["webhook_server.py\n(Flask · Gunicorn)"]
         PIGNN_MODEL["PI-GNN Model\nSaint-Venant physics loss\nHazard coef = y × V"]
-        SSE["/stream SSE endpoint\n(CORS-enabled)"]
     end
 
     subgraph CE_BAW["☁️ IBM Cloud Code Engine — hydro-baw"]
@@ -73,7 +72,7 @@ flowchart TD
     end
 
     subgraph TWIN["🖥️ Geospatial Digital Twin"]
-        UI["React + deck.gl WebGL\nCartoDB Dark Matter\nNH544 3D corridor"]
+        UI["QGIS 3.28+\nCartoDB Dark Matter\nNH544 local project"]
     end
 
     SensorA -->|"depth · velocity · S0 · n"| TOPIC
@@ -83,9 +82,6 @@ flowchart TD
     TOPIC -->|"Kafka Subscription\nWebhook POST"| WEBHOOK
     WEBHOOK --> PIGNN_MODEL
     PIGNN_MODEL -->|"hazard > 0.8 m²/s\nPOST /baw/trigger"| MCP
-    PIGNN_MODEL -->|"HAZARD_UPDATE event"| SSE
-
-    SSE -->|"EventSource /stream"| UI
 
     MCP --> BAW
     BAW --> SMS
@@ -108,13 +104,11 @@ flowchart TD
 
 ## 💻 Getting Started
 
-### 1. Run the Digital Twin (Frontend)
+### 1. Generate QGIS Digital Twin Data
 ```bash
-cd digital-twin
-npm install
-npm run dev
+python3 qgis-demo/generate_qgis_data.py
 ```
-*Navigates to the interactive control center to watch the 5-stage simulation play out.*
+*Generates scenario GeoJSON data. Next, open QGIS and run `qgis-demo/build_qgis_project.py` in the Python console to build the interactive `.qgz` project.*
 
 ### 2. Run the Backend & Security Physics Engine
 ```bash
@@ -245,5 +239,5 @@ IBM Cloud Code Engine App [hydro-baw]
 │   ├── watsonx_orchestrate_connector.py # MCP tool server + /baw/trigger endpoint
 │   ├── baw_flood_response.py           # Autonomous 3-step BAW workflow
 │   └── requirements.txt
-└── digital-twin/                       # React + Vite geospatial control center
+└── qgis-demo/                          # QGIS project generator and scenario data
 ```
