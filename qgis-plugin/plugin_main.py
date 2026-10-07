@@ -551,7 +551,10 @@ class RouteMapTool(QgsMapToolEmitPoint):
         url = f"{SERVER_URL.rstrip('/')}/set_route"
         def _do_req():
             try:
-                requests.post(url, json={"origin": self.origin, "destination": self.destination})
+                res = requests.post(url, json={"origin": self.origin, "destination": self.destination})
+                data = res.json()
+                if not data.get("found"):
+                    print("[realtime] ❌ No valid path found between those points! (Note: The highway is a directed graph, make sure to route upstream → downstream).")
             except Exception as ex:
                 print(f"[realtime] Failed to set route: {ex}")
         threading.Thread(target=_do_req, daemon=True).start()
