@@ -448,8 +448,8 @@ def start_realtime_stream(server_url: str = SERVER_URL) -> None:
             project.layerTreeRoot().addLayer(basemap)
             print("[realtime] ✓ ESRI World Imagery basemap added.")
 
-    project.addMapLayer(route_lyr)
     project.addMapLayer(segment_lyr)
+    project.addMapLayer(route_lyr)
     project.addMapLayer(sensor_lyr)   # sensors on top
 
     # Zoom to NH544 corridor
