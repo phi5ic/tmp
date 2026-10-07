@@ -78,20 +78,20 @@ project.clear()
 project.setCrs(WGS84)
 project.setTitle("Hydro-Kinematic Logistics Mesh — NH544 Flood Scenario")
 
-# ── 1. XYZ Basemap (Carto Dark Matter) ──────────────────────────
+# ── 1. XYZ Basemap (ESRI World Imagery — satellite) ──────────────────────────
 basemap_url = (
     "type=xyz"
-    "&url=https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
+    "&url=https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
     "&zmax=19&zmin=0"
 )
-basemap = QgsRasterLayer(basemap_url, "Carto Dark Matter", "wms")
+basemap = QgsRasterLayer(basemap_url, "ESRI World Imagery (Satellite)", "wms")
 if basemap.isValid():
     project.addMapLayer(basemap)
-    print("[build] ✓ Carto Dark Matter basemap added.")
+    print("[build] ✓ ESRI satellite basemap added.")
 else:
     print("[build] ✗ Basemap failed to load — check your internet connection.")
     print("          You can add it manually: Layer → Add XYZ Tile Layer")
-    print("          URL: https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png")
+    print("          URL: https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}")
 
 # ── 2. Vector layers ──────────────────────────────────────────────────────────
 loaded_layers = []

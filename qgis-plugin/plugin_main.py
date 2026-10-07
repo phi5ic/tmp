@@ -440,18 +440,18 @@ def start_realtime_stream(server_url: str = SERVER_URL) -> None:
     project = QgsProject.instance()
 
     # ── Add basemap if it doesn't exist ──────────────────────────────────────
-    basemap_name = "Carto Dark Matter"
+    basemap_name = "ESRI World Imagery (Satellite)"
     if not project.mapLayersByName(basemap_name):
         basemap_url = (
             "type=xyz"
-            "&url=https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
+            "&url=https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
             "&zmax=19&zmin=0"
         )
         basemap = QgsRasterLayer(basemap_url, basemap_name, "wms")
         if basemap.isValid():
             project.addMapLayer(basemap, False)
             project.layerTreeRoot().addLayer(basemap)
-            print("[realtime] ✓ Carto Dark Matter basemap added.")
+            print("[realtime] ✓ ESRI World Imagery basemap added.")
 
     project.addMapLayer(route_lyr)
     project.addMapLayer(segment_lyr)
