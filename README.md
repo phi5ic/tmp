@@ -13,237 +13,94 @@ This proof-of-concept leverages **Physics-Informed Neural Networks (PI-GNN)** co
 ## 🏗️ Architecture Stack
 
 ### 1. Physics-Informed Graph Neural Network (PI-GNN)
-A PyTorch-based routing engine that penalizes predictions violating the **1D Saint-Venant equations** (mass/momentum conservation). It computes a localized **Kinematic Hazard Coefficient** ($y \times V$). If the coefficient exceeds $0.8 \text{ m}^2\text{/s}$, the edge is flagged as a critical failure. The model weights are seeded deterministically (`DEMO_SEED=1`, 2 000 Adam steps) for reproducible demo outputs; replace with `load_state_dict()` for a fully-trained model.
+A PyTorch-based routing engine that penalizes predictions violating the **1D Saint-Venant equations** (mass/momentum conservation). It computes a localized **Kinematic Hazard Coefficient** ($y \times V$). If the coefficient exceeds $0.8 \text{ m}^2\text{/s}$, the edge is flagged as a critical failure. The model natively integrates with an **A* Graph Routing algorithm** (`router.py`) to actively calculate safe detours around flooded segments in real-time.
 
 ### 2. Vehicular Delay-Tolerant Networking (VDTN)
-When cellular infrastructure drops (simulated in our dead zone), the edge nodes dynamically switch to a "store-carry-and-forward" Wi-Fi Direct protocol. Telemetry is secured using **AES-256 encryption** and authenticated via **ECDSA digital signatures**.
+When cellular infrastructure drops, edge nodes dynamically switch to a "store-carry-and-forward" Wi-Fi Direct protocol. Telemetry is secured using **AES-256 encryption** and authenticated via **ECDSA digital signatures** (`vdtn_crypto.py`).
 
 ### 3. Serverless IBM Infrastructure & Agentic Orchestration
 *   **IBM Event Streams (Kafka)**: Decouples chaotic, burst-heavy telemetry from the fleet.
 *   **IBM Cloud Code Engine**: Provisions serverless containers to run PI-GNN inference dynamically.
-*   **IBM Bob (MCP Integration)**: Automates enterprise ERP responses via **watsonx**, including drone dispatching and inventory reallocation triggers.
+*   **IBM BAW (Business Automation Workflow)**: Automates enterprise ERP responses via **watsonx**, including drone dispatching, SMS halt alerts, and inventory reallocation triggers.
 
-### 4. Geospatial Digital Twin
-A high-performance **React + Vite** control center utilizing **CartoDB Dark Matter** maps. It visually simulates the NH544 corridor, cloudburst hydrodynamics (Manning's $n$), cellular disruptions, and VDTN offline rerouting.
-
-### 5. Business Automation Layer *(new)*
-Three new components implement the fully autonomous enterprise response pipeline:
-
-| Component | File | Role |
-|-----------|------|------|
-| **Code Engine Webhook Server** | `pi-gnn/webhook_server.py` | Receives IBM Event Streams subscription webhooks, runs PI-GNN inference, fires BAW on critical events |
-| **watsonx Orchestrate MCP Connector** | `baw/watsonx_orchestrate_connector.py` | Exposes `ksdma_infer`, `event_streams_publish`, and `event_streams_latest_offset` as discoverable MCP tools; hosts `/baw/trigger` endpoint |
-| **Autonomous BAW Workflow** | `baw/baw_flood_response.py` | Executes SMS dispatch → warehouse notification → ERP rebalance with zero human intervention |
+### 4. Geospatial Dashboard & PWA Fleet Client
+*   **QGIS Dashboard Plugin**: A custom QGIS plugin (`qgis-plugin/plugin_main.py`) running inside QGIS that hooks into the Server-Sent Events (SSE) webhook to update map features, flooded zones, and detours live without reloading.
+*   **Driver HUD (PWA Client)**: A fully responsive web app (`driver-hud/`) designed for truck drivers. It consumes the same SSE streams to provide dynamic ETAs, A* detours, simulated Vehicle-to-Vehicle (V2V) proximity radars, and live field reporting.
 
 ---
 
-## 🗺️ System Architecture
+## 📁 Repository Structure & Modules
 
-```mermaid
-flowchart TD
-    subgraph SENSORS["🌊 Field Sensors — NH544 Chalakudy Basin"]
-        SensorA["Sensor-NH544-A\n(Approach zone)"]
-        SensorB["Sensor-NH544-B\n(Flood zone · Bridge)"]
-        VDTN["VDTN Mesh Node\n(Wi-Fi Direct offline)"]
-    end
+The repository has been heavily modularized for enterprise scalability:
 
-    subgraph IBM_STREAMS["☁️ IBM Event Streams (Kafka)"]
-        TOPIC["Topic: chalakudy-basin-telemetry"]
-    end
-
-    subgraph CE_PIGNN["☁️ IBM Cloud Code Engine — hydro-pi-gnn"]
-        WEBHOOK["webhook_server.py\n(Flask · Gunicorn)"]
-        PIGNN_MODEL["PI-GNN Model\nSaint-Venant physics loss\nHazard coef = y × V"]
-        SSE["/stream SSE endpoint\n(CORS-enabled)"]
-    end
-
-    subgraph CE_BAW["☁️ IBM Cloud Code Engine — hydro-baw"]
-        MCP["watsonx_orchestrate_connector.py\nMCP tool server · /baw/trigger"]
-        BAW["baw_flood_response.py\nAutonomous 3-step workflow"]
-    end
-
-    subgraph BAW_ACTIONS["📦 Enterprise Response Actions"]
-        SMS["Step 1 · Twilio SMS\nDriver halt alerts"]
-        WH["Step 2 · Warehouse Webhooks\nETA delay + incident ref"]
-        ERP["Step 3 · ERP REST API\n/api/v1/inventory/reallocate\nCochin_Hub_02 rebalance"]
-    end
-
-    subgraph ORCHESTRATE["🤖 IBM watsonx Orchestrate"]
-        SKILL["Skill-flow\nksdma_infer · drone_dispatch\nevent_streams_publish"]
-    end
-
-    subgraph TWIN["🖥️ Geospatial Digital Twin"]
-        UI["React + deck.gl WebGL\nCartoDB Dark Matter\nNH544 3D corridor"]
-    end
-
-    SensorA -->|"depth · velocity · S0 · n"| TOPIC
-    SensorB -->|"depth · velocity · S0 · n"| TOPIC
-    VDTN    -->|"VDTN store-carry-forward\nAES-256 + ECDSA"| TOPIC
-
-    TOPIC -->|"Kafka Subscription\nWebhook POST"| WEBHOOK
-    WEBHOOK --> PIGNN_MODEL
-    PIGNN_MODEL -->|"hazard > 0.8 m²/s\nPOST /baw/trigger"| MCP
-    PIGNN_MODEL -->|"HAZARD_UPDATE event"| SSE
-
-    SSE -->|"EventSource /stream"| UI
-
-    MCP --> BAW
-    BAW --> SMS
-    BAW --> WH
-    BAW --> ERP
-    BAW -->|"BAW_CALLBACK_URL"| ORCHESTRATE
-
-    ORCHESTRATE -->|"MCP JSON-RPC\nX-Api-Key"| MCP
-
-    style SENSORS       fill:#0b1a2a,stroke:#00f0ff,color:#f0f4f8
-    style IBM_STREAMS   fill:#0b1a2a,stroke:#00f0ff,color:#f0f4f8
-    style CE_PIGNN      fill:#0b1a2a,stroke:#00f0ff,color:#f0f4f8
-    style CE_BAW        fill:#0b1a2a,stroke:#00f0ff,color:#f0f4f8
-    style BAW_ACTIONS   fill:#1a0b0f,stroke:#ff3366,color:#f0f4f8
-    style ORCHESTRATE   fill:#0b1a14,stroke:#00ff9d,color:#f0f4f8
-    style TWIN          fill:#0b1a2a,stroke:#00f0ff,color:#f0f4f8
+```text
+.
+├── pi-gnn/                           # Core PI-GNN Inference & Networking
+│   ├── model.py                      # PyTorch PI-GNN Model 
+│   ├── router.py                     # A* graph routing engine over NH544
+│   ├── webhook_server.py             # Flask Webhook API (/infer, /set_route)
+│   ├── sse_server.py                 # Server-Sent Events (SSE) broadcaster
+│   ├── mock_event_streams.py         # IBM Event Streams telemetry injection
+│   ├── vdtn_node.py                  # VDTN mesh routing protocol
+│   ├── vdtn_crypto.py                # AES-256/ECDSA encryption suite
+│   └── vdtn_simulation.py            # Simulation runner
+├── baw/                              # Business Automation Workflow
+│   ├── actions.py                    # Twilio SMS, ERP webhooks
+│   ├── config.py                     # BAW Configuration & Secrets
+│   ├── mcp_registry.py               # Model Context Protocol registry
+│   ├── mcp_tools.py                  # WatsonX MCP tool definitions
+│   └── watsonx_config.py             # Orchestrate API configs
+├── driver-hud/                       # Progressive Web App (PWA) Client
+│   ├── index.html                    # Dashboard UI
+│   ├── style.css                     # Responsive Styling
+│   ├── app.js                        # SSE consumer & Route ETA logic
+│   └── service-worker.js             # Offline caching support
+├── qgis-plugin/                      # QGIS Real-Time Extension
+│   └── plugin_main.py                # SSE consumer rendering live vectors in QGIS
+└── qgis-demo/                        # Static map assets and geometries
+    ├── data/                         # GeoJSON graph datasets
+    └── hydro_kinematic_demo.qgz      # QGIS Project file
 ```
 
 ---
 
 ## 💻 Getting Started
 
-### 1. Run the Digital Twin (Frontend)
-```bash
-cd digital-twin
-npm install
-npm run dev
-```
-*Navigates to the interactive control center to watch the 5-stage simulation play out.*
-
-### 2. Run the Backend & Security Physics Engine
+### 1. Run the Backend (PI-GNN Webhook Server)
+This server orchestrates the PI-GNN model, the A* router, and broadcasts the SSE streams to all connected clients.
 ```bash
 cd pi-gnn
 pip install -r requirements.txt
-# Run the PI-GNN & IBM Event Streams Mock
-python3 model.py
-# Run the Offline Cryptographic VDTN Simulation
-python3 vdtn_simulation.py
+python3 webhook_server.py
+# Runs on http://localhost:8080
 ```
 
-### 3. Containerization — IBM Cloud Code Engine
-
-Two containers are deployed: the **PI-GNN inference service** and the **BAW / MCP connector**.
-
+### 2. Run the Driver HUD (Frontend Client)
+Host the frontend locally to simulate the PWA interface used by the fleet:
 ```bash
-# Build and push the PI-GNN inference image
-cd pi-gnn
-docker build -t hydro-pi-gnn .
-docker tag hydro-pi-gnn icr.io/<namespace>/hydro-pi-gnn:latest
-docker push icr.io/<namespace>/hydro-pi-gnn:latest
-
-# Build and push the BAW / MCP connector image
-cd ../baw
-docker build -t hydro-baw .
-docker tag hydro-baw icr.io/<namespace>/hydro-baw:latest
-docker push icr.io/<namespace>/hydro-baw:latest
+python3 -m http.server 4000 --directory driver-hud/
+# Open http://localhost:4000 in your browser
 ```
 
-**Code Engine App configuration (PI-GNN):**
+### 3. Run the QGIS Real-Time Dashboard
+1. Open QGIS and load the project: `qgis-demo/hydro_kinematic_demo.qgz`
+2. Open the QGIS Python Console (Plugins → Python Console).
+3. Open `qgis-plugin/plugin_main.py` in the internal editor and click **Run**.
+4. The map will instantly synchronize with the active backend stream.
+
+### 4. Trigger the Autonomous Pipeline
+To simulate a cloudburst hitting the NH544 highway and watch the entire architecture react:
 ```bash
-ibmcloud ce app create \
-  --name hydro-pi-gnn \
-  --image icr.io/<namespace>/hydro-pi-gnn:latest \
-  --min-scale 0 --max-scale 10 \
-  --env BAW_ENDPOINT=https://hydro-baw.<region>.codeengine.appdomain.cloud/baw/trigger
+curl -X POST http://localhost:8080/infer \
+     -H "Content-Type: application/json" \
+     -d '{
+           "node_id": "Sensor-NH544-B",
+           "metrics": {
+             "depth": 1.5,
+             "velocity": 2.5,
+             "S0": 0.05,
+             "n": 0.065
+           }
+         }'
 ```
-
-**Code Engine App configuration (BAW):**
-```bash
-ibmcloud ce app create \
-  --name hydro-baw \
-  --image icr.io/<namespace>/hydro-baw:latest \
-  --min-scale 0 --max-scale 5 \
-  --env-from-secret hydro-baw-secrets
-```
-
-**Create the secrets bundle:**
-```bash
-ibmcloud ce secret create --name hydro-baw-secrets \
-  --from-literal TWILIO_ACCOUNT_SID=<sid> \
-  --from-literal TWILIO_AUTH_TOKEN=<token> \
-  --from-literal TWILIO_FROM_NUMBER=<e164_number> \
-  --from-literal ERP_BASE_URL=https://erp.your-org.internal \
-  --from-literal ERP_API_KEY=<erp_key> \
-  --from-literal MCP_API_KEY=<mcp_secret> \
-  --from-literal DRIVER_PHONE_NUMBERS=+9199XXXXXXXX,+9188XXXXXXXX \
-  --from-literal WAREHOUSE_WEBHOOK_URLS=https://wh1.example.com/alert,https://wh2.example.com/alert
-```
-
-**Attach IBM Event Streams as a subscription trigger:**
-```bash
-ibmcloud ce subscription kafka create \
-  --name nh544-telemetry-sub \
-  --destination hydro-pi-gnn \
-  --destination-type app \
-  --topic chalakudy-basin-telemetry \
-  --brokers <kafka_broker_list> \
-  --consumer-group hydro-pi-gnn-cg
-```
-
-### 4. Run the BAW Demo (standalone)
-```bash
-cd baw
-pip install -r requirements.txt
-python3 baw_flood_response.py
-```
-*Runs a full autonomous workflow in demo mode — no credentials required.*
-
-### 5. Run the MCP Connector Server (local dev)
-```bash
-cd baw
-MCP_API_KEY=dev-insecure-key python3 watsonx_orchestrate_connector.py
-# Discovers tools at: GET http://localhost:9090/mcp/tools/list
-# Trigger BAW manually: POST http://localhost:9090/baw/trigger
-```
-
----
-
-## 🔄 End-to-End Autonomous Flow
-
-```
-Flood Sensor → IBM Event Streams (Kafka)
-    │
-    │  Kafka Subscription Webhook
-    ▼
-IBM Cloud Code Engine App [hydro-pi-gnn]
-  webhook_server.py  →  model.py (PI-GNN inference)
-    │
-    │  hazard > 0.8 m²/s  →  POST /baw/trigger (fire-and-forget thread)
-    ▼
-IBM Cloud Code Engine App [hydro-baw]
-  watsonx_orchestrate_connector.py
-    │
-    ├─► baw_flood_response.py  Step 1: Twilio SMS → Drivers (halt at elevated rest area)
-    ├─► baw_flood_response.py  Step 2: Webhook → FMCG Warehouses (ETA delay + incident ref)
-    └─► baw_flood_response.py  Step 3: ERP API /api/v1/inventory/reallocate (Cochin_Hub_02)
-    │
-    └─► BAW_CALLBACK_URL (optional — watsonx Orchestrate dashboard / audit log)
-```
-
----
-
-## 📁 Repository Structure
-
-```
-.
-├── .bob/
-│   └── mcp.json                        # MCP server registry (Bob + watsonx Orchestrate)
-├── pi-gnn/
-│   ├── Dockerfile                      # Optimised multi-stage Code Engine image
-│   ├── model.py                        # PI-GNN + Saint-Venant physics loss
-│   ├── vdtn_simulation.py              # Offline VDTN mesh simulation
-│   ├── webhook_server.py               # Flask app — Event Streams webhook receiver
-│   └── requirements.txt
-├── baw/
-│   ├── Dockerfile                      # Code Engine image for BAW + MCP connector
-│   ├── watsonx_orchestrate_connector.py # MCP tool server + /baw/trigger endpoint
-│   ├── baw_flood_response.py           # Autonomous 3-step BAW workflow
-│   └── requirements.txt
-└── digital-twin/                       # React + Vite geospatial control center
-```
+* **Effect**: The PI-GNN model detects a critical hazard > 0.8 m²/s. It fires a background trigger to the IBM BAW webhook, calculates a safe detour using `router.py`, and pushes the new route via SSE to both the QGIS dashboard and the Driver HUD client simultaneously.

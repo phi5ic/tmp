@@ -6,7 +6,7 @@ from typing import Any
 import requests
 from flask import jsonify
 
-from .watsonx_config import INFER_ENDPOINT, ES_URL, ES_APIKEY, ES_TOPIC
+from watsonx_config import INFER_ENDPOINT, ES_URL, ES_APIKEY, ES_TOPIC
 
 log = logging.getLogger(__name__)
 

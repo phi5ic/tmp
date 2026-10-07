@@ -406,7 +406,7 @@ class HydroRouter:
     # ── Node snapping ─────────────────────────────────────────────────────────
 
     def _snap(
-        self, node: tuple[float, float], tolerance_m: float = 5000.0
+        self, node: tuple[float, float], tolerance_m: float = 100000.0
     ) -> Optional[tuple[float, float]]:
         """
         Snap an arbitrary coordinate to the nearest graph node within tolerance.

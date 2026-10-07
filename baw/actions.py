@@ -4,7 +4,7 @@ import uuid
 from typing import Optional
 import requests
 
-from .config import (
+from config import (
     TWILIO_ACCOUNT_SID,
     TWILIO_AUTH_TOKEN,
     TWILIO_FROM_NUMBER,
@@ -13,7 +13,7 @@ from .config import (
     ELEVATED_REST_AREA,
     DEMO_MODE,
 )
-from .utils import now_iso, eta_iso
+from utils import now_iso, eta_iso
 
 log = logging.getLogger("BAW-Actions")
 
