@@ -1,6 +1,8 @@
 import os
 import logging
 import threading
+import time
+import uuid
 import requests
 import torch
 from flask import Flask, request, jsonify, Response
@@ -64,7 +66,45 @@ def set_route():
             "length_m": result.length_m
         })
         
-    return jsonify({"found": result.found, "length_m": result.length_m}), 200
+    return jsonify({
+        "found": result.found,
+        "length_m": result.length_m,
+        "is_rerouted": result.is_rerouted,
+        "geojson": result.geojson,
+    }), 200
+
+@app.route("/report", methods=["POST"])
+def report():
+    """Accept a driver/community report and fan it out to connected clients."""
+    body = request.get_json(silent=True) or {}
+    
+    event_type = body.get("type")
+    description = body.get("description", "")
+    lat = body.get("lat")
+    lon = body.get("lon")
+    severity = body.get("severity", 1)
+    vehicle_id = body.get("vehicle_id", "unknown")
+
+    if not event_type or lat is None or lon is None:
+        return jsonify({"error": "type_lat_lon_required"}), 422
+
+    report_data = {
+        "type": event_type,
+        "severity": severity,
+        "lat": float(lat),
+        "lon": float(lon),
+        "description": description,
+        "vehicle_id": vehicle_id,
+        "timestamp": int(time.time() * 1000),
+    }
+    
+    notify_clients({
+        "type": "REPORT_EVENT",
+        "report": report_data
+    })
+    
+    report_id = str(uuid.uuid4())[:8]
+    return jsonify({"accepted": True, "report_id": report_id}), 201
 
 @app.route("/stream")
 def stream():
