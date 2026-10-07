@@ -176,3 +176,117 @@ If the CartoCDN basemap fails, add a local OSM tile layer:
 3. Name: `OpenStreetMap`
 
 Or load any raster / TIFF you have for the Kerala area.
+
+---
+
+## Real-Time Demo
+
+Two real-time variants sit alongside the scripted demo. Both are driven by
+[`sensor_emitter.py`](sensor_emitter.py) and replay the same 6-stage flood
+scenario at wall-clock speed.
+
+### Level 2 — SSE Stream (most impressive, recommended for demos)
+
+```
+Terminal 1                   Flask server              QGIS
+──────────────               ────────────              ────
+sensor_emitter.py  →POST→   webhook_server.py  →SSE→  realtime_qgis_plugin.py
+                   /infer    /stream                   in-memory layers
+                                                       repaint every ~250 ms
+```
+
+**Start order:**
+
+```bash
+# Terminal 1 — start the PI-GNN inference server
+cd pi-gnn
+python3 webhook_server.py        # listens on :8080
+
+# Terminal 2 — start the telemetry emitter
+python3 qgis-demo/sensor_emitter.py   # POSTs to /infer every 3 s
+```
+
+```python
+# QGIS Python Console (Plugins → Python Console → Show Editor)
+# Open qgis-demo/realtime_qgis_plugin.py  →  Run Script
+```
+
+Two new layers appear: **🔴 Sensor Nodes (Live)** and **🛣 NH544 Segments (Live)**.
+Colours update in real time as each inference result arrives via SSE.
+
+To stop the stream cleanly from the QGIS console:
+```python
+stop_realtime_stream()
+```
+
+---
+
+### Level 1 — File Bridge (offline fallback, no Flask required)
+
+```
+Terminal                           QGIS
+──────────────                     ────
+sensor_emitter.py --offline  →     realtime_file_bridge.py
+writes sensor_nodes.geojson        QFileSystemWatcher detects change
+                                   layer.dataProvider().reloadData()
+```
+
+**Start order:**
+
+```bash
+# Terminal — run emitter in offline mode (no server needed)
+python3 qgis-demo/sensor_emitter.py --offline
+```
+
+```python
+# QGIS Python Console
+# Open qgis-demo/realtime_file_bridge.py  →  Run Script
+```
+
+The **Sensor Nodes (File Bridge)** layer reloads each time `sensor_nodes.geojson`
+is overwritten on disk (typically within ~500 ms of each emitter tick).
+
+To stop:
+```python
+stop_file_bridge()
+```
+
+---
+
+### Emitter options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--server URL` | `http://localhost:8080` | Webhook server base URL |
+| `--interval N` | `3` | Seconds between readings per stage |
+| `--offline` | off | Write GeoJSON directly, skip Flask |
+| `--once` | off | Run scenario once then exit (default: loop) |
+
+The emitter **auto-detects** if the server is unreachable and falls back to
+offline mode automatically — so you always have a working demo.
+
+---
+
+### Real-time colour key
+
+| Colour | Field value | Hazard threshold |
+|---|---|---|
+| 🔵 Cyan `#00F0FF` | `SAFE` | < 0.4 m²/s |
+| 🟡 Amber `#FFAA00` | `WARNING` | 0.4–0.8 m²/s |
+| 🔴 Red `#FF3366` | `CRITICAL` | ≥ 0.8 m²/s |
+
+---
+
+### Real-time file structure
+
+```
+qgis-demo/
+  sensor_emitter.py          ← drive both real-time variants
+  realtime_qgis_plugin.py    ← Level 2: SSE → in-memory layers (run inside QGIS)
+  realtime_file_bridge.py    ← Level 1: file watcher → layer reload (run inside QGIS)
+
+pi-gnn/
+  webhook_server.py          ← Flask /infer + /stream SSE (Level 2 only)
+```
+
+---

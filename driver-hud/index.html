@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Driver HUD - PI-GNN</title>
+    <link rel="manifest" href="manifest.json">
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Roboto+Mono:wght@400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="background-anim"></div>
+    <div class="hud-container">
+        
+        <header class="hud-header">
+            <div class="logo">
+                <span class="pulse-dot" id="connection-dot"></span>
+                <h1>PI-GNN Logistics HUD</h1>
+            </div>
+            <div class="vehicle-info">
+                <span>VEHICLE: <strong>TRK-774-X</strong></span>
+                <span class="status-badge safe" id="overall-status">SAFE</span>
+            </div>
+        </header>
+
+        <main class="hud-grid">
+            <section class="panel route-panel">
+                <h2>Navigation Info</h2>
+                
+                <div class="data-row">
+                    <span class="label">CURRENT ROUTE</span>
+                    <span class="value" id="route-type">ORIGINAL</span>
+                </div>
+                
+                <div class="data-row">
+                    <span class="label">DISTANCE</span>
+                    <span class="value"><span id="route-length">29.4</span> KM</span>
+                </div>
+
+                <div class="data-row">
+                    <span class="label">NETWORK</span>
+                    <span class="value highlight">VDTN MESH</span>
+                </div>
+
+                <div class="alert-box" id="reroute-alert">
+                    ⚠️ CRITICAL HAZARD AHEAD - ROUTE DIVERTED ⚠️
+                </div>
+            </section>
+
+            <section class="panel sensor-panel">
+                <h2>Live Telemetry</h2>
+                <div class="telemetry-grid">
+                    <div class="metric">
+                        <span class="metric-label">Hazard Coef (m²/s)</span>
+                        <span class="metric-value" id="hazard-val">0.110</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Affected Nodes</span>
+                        <span class="metric-value" id="affected-val">0</span>
+                    </div>
+                </div>
+                
+                <div class="feed-container">
+                    <h3>System Feed</h3>
+                    <ul id="event-feed" class="event-feed">
+                        <li><span class="time">System</span> initialized and standing by.</li>
+                    </ul>
+                </div>
+            </section>
+        </main>
+        
+        <footer class="hud-footer">
+            <p>End-to-End Encrypted via VDTN • Secure Offline Link</p>
+        </footer>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>
