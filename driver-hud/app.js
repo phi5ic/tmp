@@ -16,7 +16,12 @@ const els = {
     routeDest: document.getElementById('route-dest'),
     routeWaypoint: document.getElementById('route-waypoint'),
     v2vList: document.getElementById('v2v-list'),
-    reportList: document.getElementById('report-list')
+    reportList: document.getElementById('report-list'),
+    envFlood: document.getElementById('env-flood'),
+    envTraffic: document.getElementById('env-traffic'),
+    envWeather: document.getElementById('env-weather'),
+    envBlocks: document.getElementById('env-blocks'),
+    envLandslide: document.getElementById('env-landslide')
 };
 
 function getTimeStr() {
@@ -42,6 +47,42 @@ function updateColors(severity) {
     els.hazardVal.style.color = colorVar;
     els.connectionDot.style.background = colorVar;
     els.connectionDot.style.boxShadow = `0 0 10px ${colorVar}`;
+    
+    // Update Environmental Conditions Dynamically
+    if(severity === 'CRITICAL') {
+        els.envFlood.textContent = 'HIGH';
+        els.envFlood.parentElement.className = 'env-item critical';
+        els.envTraffic.textContent = 'Gridlock';
+        els.envTraffic.parentElement.className = 'env-item critical';
+        els.envWeather.textContent = 'Cloudburst / Heavy Rain';
+        els.envWeather.parentElement.className = 'env-item critical';
+        els.envBlocks.textContent = 'Debris Detected';
+        els.envBlocks.parentElement.className = 'env-item critical';
+        els.envLandslide.textContent = 'High Risk';
+        els.envLandslide.parentElement.className = 'env-item critical';
+    } else if(severity === 'WARNING') {
+        els.envFlood.textContent = 'Elevated';
+        els.envFlood.parentElement.className = 'env-item warning';
+        els.envTraffic.textContent = 'Congested';
+        els.envTraffic.parentElement.className = 'env-item warning';
+        els.envWeather.textContent = 'Moderate Rain';
+        els.envWeather.parentElement.className = 'env-item warning';
+        els.envBlocks.textContent = 'Possible';
+        els.envBlocks.parentElement.className = 'env-item warning';
+        els.envLandslide.textContent = 'Moderate Risk';
+        els.envLandslide.parentElement.className = 'env-item warning';
+    } else {
+        els.envFlood.textContent = 'Low';
+        els.envFlood.parentElement.className = 'env-item';
+        els.envTraffic.textContent = 'Smooth';
+        els.envTraffic.parentElement.className = 'env-item';
+        els.envWeather.textContent = 'Clear';
+        els.envWeather.parentElement.className = 'env-item';
+        els.envBlocks.textContent = 'None';
+        els.envBlocks.parentElement.className = 'env-item';
+        els.envLandslide.textContent = 'No Risk';
+        els.envLandslide.parentElement.className = 'env-item';
+    }
 }
 
 // Routing Logic
